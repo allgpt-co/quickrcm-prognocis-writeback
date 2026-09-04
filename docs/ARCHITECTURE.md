@@ -34,7 +34,7 @@ The operator uses noVNC to log into QuickRCM and PrognoCIS and complete MFA. The
 
 ## Source extraction
 
-The QuickScribe adapter first opens the configured attested-notes screen. It reads each rendered row and accepts only rows whose status element resolves to `ATTESTED`. It requires a stable job ID and same-origin detail link.
+The QuickScribe adapter first opens the configured attested-notes screen. It reads each rendered row and accepts only rows whose normalized status resolves exactly to `ATTESTED`. It supports either a stable job-ID attribute plus same-origin detail link, or a rendered row click plus a configured detail-URL capture pattern. In the row-click case it derives the stable job ID from the same-origin rendered URL and independently checks it again on the detail page.
 
 On the detail screen it independently confirms:
 
@@ -56,7 +56,7 @@ The source note must explicitly contain these headings or their exact long forms
 - `ROS` or `Review of Systems`
 - `PE`, `Physical Exam`, or `Physical Examination`
 
-All three sections must be non-empty and occur once. A generic SOAP note containing only Subjective and Objective is rejected because automatically guessing which sentences belong in HPI, ROS, or Physical Examination would be unsafe.
+All three sections must be non-empty, substantive, and occur once. A section containing only placeholders such as `Not documented` is rejected, including a labeled list in which every finding is the same placeholder. A generic SOAP note containing only Subjective and Objective is rejected because automatically guessing which sentences belong in HPI, ROS, or Physical Examination would be unsafe.
 
 The first implementation maps narrative text only. It does not infer symptom checkboxes, negative findings, organ-system selections, or normal/abnormal exam states from prose.
 

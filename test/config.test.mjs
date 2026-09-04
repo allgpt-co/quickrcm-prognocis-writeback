@@ -104,6 +104,17 @@ test('probe configuration requires both browser source and destination selectors
   assert.throws(() => validateConfigObject(missingSource), /quickScribe.*finalNote/i);
 });
 
+test('QuickScribe may derive a stable note identity after row-click navigation', () => {
+  const value = config();
+  value.quickScribe.noteIdUrlPattern = '^/scribe/encounters/([^/]+)$';
+  value.quickScribe.selectors.noteOpenLink = '';
+  value.quickScribe.selectors.noteIdAttribute = '';
+  assert.doesNotThrow(() => validateConfigObject(value));
+
+  value.quickScribe.noteIdUrlPattern = '';
+  assert.throws(() => validateConfigObject(value), /stable noteIdAttribute or noteIdUrlPattern/i);
+});
+
 test('write mode requires all three clinical sections, ICD-10, and draft proof', () => {
   const value = config();
   value.automation.writeEnabled = true;

@@ -46,6 +46,17 @@ test('rejects any content changed after the producer generated its hash', () => 
   assert.throws(() => validateClinicalArtifact(changed), /hash does not match/i);
 });
 
+test('rejects a directly supplied clinical section containing only placeholders', () => {
+  const base = artifact();
+  const value = artifact({
+    sections: {
+      ...base.sections,
+      ros: '- Constitutional: Not documented.\n- Respiratory: Not documented.'
+    }
+  });
+  assert.throws(() => validateClinicalArtifact(value), /sections\.ros.*placeholder-only/i);
+});
+
 test('canonical hash treats omitted optional EHR identifiers as null', () => {
   const value = artifact();
   delete value.patient.prognocisPatientId;

@@ -1,5 +1,7 @@
 node_modules/
+.npm/
 .codex/
+.playwright-cli/
 .env
 config/writeback.json
 .runtime/

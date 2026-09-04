@@ -25,6 +25,60 @@ function requireText(value, label, maxLength) {
   return result;
 }
 
+const PLACEHOLDER_CLINICAL_VALUES = new Set([
+  'n/a',
+  'na',
+  'none',
+  'none documented',
+  'no information available',
+  'not available',
+  'not documented',
+  'not provided',
+  'unknown'
+]);
+
+const CLINICAL_SECTION_HEADINGS = new Set([
+  'hpi',
+  'history of present illness',
+  'ros',
+  'review of systems',
+  'pe',
+  'physical exam',
+  'physical examination'
+]);
+
+function placeholderCandidate(line) {
+  let candidate = line
+    .normalize('NFKC')
+    .replace(/^\s*(?:[-*+]|\d+[.)])\s+/, '')
+    .replace(/[*_`~]/g, '')
+    .trim();
+  const colon = candidate.indexOf(':');
+  if (colon >= 0) candidate = candidate.slice(colon + 1).trim();
+  return candidate.toLowerCase().replace(/[.!;:,]+$/g, '').trim();
+}
+
+export function clinicalTextIsPlaceholderOnly(value) {
+  if (typeof value !== 'string' || !value.trim()) return false;
+  const lines = value.replace(/\r\n/g, '\n')
+    .split('\n')
+    .map((line) => line.replace(/^\s*#{1,6}\s+/, '').trim())
+    .filter(Boolean)
+    .filter((line) => !CLINICAL_SECTION_HEADINGS.has(
+      line.replace(/[*_`~:]/g, '').trim().toLowerCase()
+    ));
+  return lines.length > 0
+    && lines.every((line) => PLACEHOLDER_CLINICAL_VALUES.has(placeholderCandidate(line)));
+}
+
+function requireClinicalText(value, label, maxLength) {
+  const result = requireText(value, label, maxLength);
+  if (clinicalTextIsPlaceholderOnly(result)) {
+    throw new Error(`${label} contains placeholder-only text rather than provider-documented findings`);
+  }
+  return result;
+}
+
 function optionalText(value, label, maxLength) {
   if (value === undefined || value === null || value === '') return null;
   return requireText(value, label, maxLength);
@@ -179,9 +233,9 @@ export function validateClinicalArtifact(value) {
       byId: requireText(attestation.byId, 'attestation.byId', 100)
     },
     sections: {
-      hpi: requireText(sections.hpi, 'sections.hpi', 50_000),
-      ros: requireText(sections.ros, 'sections.ros', 50_000),
-      physicalExamination: requireText(
+      hpi: requireClinicalText(sections.hpi, 'sections.hpi', 50_000),
+      ros: requireClinicalText(sections.ros, 'sections.ros', 50_000),
+      physicalExamination: requireClinicalText(
         sections.physicalExamination,
         'sections.physicalExamination',
         50_000

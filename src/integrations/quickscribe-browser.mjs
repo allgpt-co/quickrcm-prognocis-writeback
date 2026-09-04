@@ -5,6 +5,10 @@ function normalize(value) {
   return String(value ?? '').normalize('NFKC').replace(/\s+/g, ' ').trim();
 }
 
+function canonicalStatus(value) {
+  return normalize(value).toUpperCase();
+}
+
 function dateOnly(value, label) {
   const text = normalize(value);
   let match = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
@@ -51,6 +55,51 @@ export class QuickScribeBrowser {
     this.targets = new Map();
   }
 
+  jobIdFromUrl(value, { required = true } = {}) {
+    if (!this.config.noteIdUrlPattern) {
+      if (required) throw new Error('QuickScribe note URL identity pattern is not configured');
+      return null;
+    }
+    const parsed = new URL(value, this.config.url);
+    const match = parsed.pathname.match(new RegExp(this.config.noteIdUrlPattern));
+    const jobId = normalize(match?.[1]);
+    if (!jobId && required) {
+      throw new Error('QuickScribe note detail URL has no stable job ID matching the configured pattern');
+    }
+    return jobId || null;
+  }
+
+  async targetFromRow(row) {
+    const attributeJobId = this.selectors.noteIdAttribute
+      ? await exactAttribute(row, this.selectors.noteIdAttribute, 'QuickScribe note row')
+      : null;
+    let targetUrl;
+    if (this.selectors.noteOpenLink) {
+      const link = row.locator(this.selectors.noteOpenLink).first();
+      const href = await link.getAttribute('href');
+      if (!href) throw new Error('ATTESTED QuickScribe note row has no stable detail URL');
+      targetUrl = new URL(href, this.page.url());
+    } else {
+      const previousUrl = this.page.url();
+      await row.click();
+      await this.page.waitForURL((url) => url.href !== previousUrl, { waitUntil: 'domcontentloaded' });
+      targetUrl = new URL(this.page.url());
+    }
+    if (targetUrl.origin !== new URL(this.config.url).origin) {
+      throw new Error('QuickScribe note detail URL changed to an unexpected origin');
+    }
+
+    const urlJobId = this.config.noteIdUrlPattern
+      ? this.jobIdFromUrl(targetUrl.href)
+      : null;
+    if (attributeJobId && urlJobId && attributeJobId !== urlJobId) {
+      throw new Error('QuickScribe note row identifier does not match its detail URL');
+    }
+    const jobId = attributeJobId ?? urlJobId;
+    if (!jobId) throw new Error('ATTESTED QuickScribe note row has no stable job ID');
+    return { jobId, url: targetUrl.href };
+  }
+
   async assertAuthenticated() {
     if (this.selectors.loginMarker
       && await optionalVisibleInFrames(this.page, this.selectors.loginMarker)) {
@@ -72,30 +121,31 @@ export class QuickScribeBrowser {
   async listAttestedTargets(limit) {
     await this.page.goto(this.config.attestedNotesUrl, { waitUntil: 'domcontentloaded' });
     await this.assertAuthenticated();
-    const result = await firstVisibleInFrames(
-      this.page,
-      this.selectors.noteRows,
-      'QuickScribe note rows'
-    );
-    const rows = result.scope.locator(this.selectors.noteRows);
+    let result = await firstVisibleInFrames(this.page, this.selectors.noteRows, 'QuickScribe note rows');
+    let rows = result.scope.locator(this.selectors.noteRows);
+    const rowCount = await rows.count();
     const targets = [];
-    for (let index = 0; index < await rows.count() && targets.length < limit; index += 1) {
+    for (let index = 0; index < rowCount && targets.length < limit; index += 1) {
+      if (this.page.url() !== this.config.attestedNotesUrl) {
+        await this.page.goto(this.config.attestedNotesUrl, { waitUntil: 'domcontentloaded' });
+        await this.assertAuthenticated();
+        result = await firstVisibleInFrames(this.page, this.selectors.noteRows, 'QuickScribe note rows');
+        rows = result.scope.locator(this.selectors.noteRows);
+        if (await rows.count() !== rowCount) {
+          throw new Error('QuickScribe queue changed while stable note targets were being collected');
+        }
+      }
       const row = rows.nth(index);
       if (!(await row.isVisible().catch(() => false))) continue;
-      const status = normalize(await row.locator(this.selectors.noteStatus).first().innerText().catch(() => ''));
+      const status = canonicalStatus(
+        await row.locator(this.selectors.noteStatus).first().innerText().catch(() => '')
+      );
       if (status !== 'ATTESTED') continue;
-      const jobId = await exactAttribute(row, this.selectors.noteIdAttribute, 'QuickScribe note row');
-      const link = row.locator(this.selectors.noteOpenLink).first();
-      const href = await link.getAttribute('href');
-      if (!href) throw new Error('ATTESTED QuickScribe note row has no stable detail URL');
-      const targetUrl = new URL(href, this.page.url());
-      if (targetUrl.origin !== new URL(this.config.url).origin) {
-        throw new Error('QuickScribe note detail URL changed to an unexpected origin');
-      }
+      const target = await this.targetFromRow(row);
+      const { jobId } = target;
       if (targets.some((target) => target.jobId === jobId)) {
         throw new Error('QuickScribe queue contains a duplicate stable job ID');
       }
-      const target = { jobId, url: targetUrl.href };
       this.targets.set(jobId, target);
       targets.push(target);
     }
@@ -131,9 +181,19 @@ export class QuickScribeBrowser {
       this.selectors.noteDetailRoot,
       'QuickScribe note detail'
     );
-    const jobId = await exactAttribute(root.locator, this.selectors.noteIdAttribute, 'QuickScribe note detail');
+    const attributeJobId = this.selectors.noteIdAttribute
+      ? await exactAttribute(root.locator, this.selectors.noteIdAttribute, 'QuickScribe note detail')
+      : null;
+    const urlJobId = this.config.noteIdUrlPattern ? this.jobIdFromUrl(this.page.url()) : null;
+    if (attributeJobId && urlJobId && attributeJobId !== urlJobId) {
+      throw new Error('QuickScribe note detail identifier does not match its URL');
+    }
+    const jobId = attributeJobId ?? urlJobId;
+    if (!jobId) throw new Error('QuickScribe note detail has no stable job ID');
     if (jobId !== target.jobId) throw new Error('QuickScribe note identity changed between queue and detail page');
-    const status = await exactText(this.page, this.selectors.detailStatus, 'QuickScribe note status');
+    const status = canonicalStatus(
+      await exactText(this.page, this.selectors.detailStatus, 'QuickScribe note status')
+    );
     if (status !== 'ATTESTED') throw new Error('QuickScribe note is no longer ATTESTED');
 
     const finalNote = await clinicalText(this.page, this.selectors.finalNote, 'provider-approved QuickScribe note');

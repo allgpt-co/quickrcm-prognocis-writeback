@@ -1,4 +1,5 @@
 import {
+  clinicalTextIsPlaceholderOnly,
   clinicalArtifactHash,
   validateClinicalArtifact
 } from './clinical-artifact.mjs';
@@ -62,6 +63,9 @@ export function parseExplicitClinicalSections(finalNote) {
   }
   for (const [section, value] of Object.entries(sections)) {
     if (!value.trim()) throw new Error(`Provider-approved finalNote has no explicit ${section} section`);
+    if (clinicalTextIsPlaceholderOnly(value)) {
+      throw new Error(`Provider-approved finalNote has placeholder-only ${section} content`);
+    }
   }
   return sections;
 }

@@ -29,6 +29,32 @@ test('refuses semantic guessing from a generic Subjective/Objective SOAP note', 
   ), /no explicit hpi/i);
 });
 
+test('rejects explicit clinical headings whose content is only undocumented placeholders', () => {
+  assert.throws(() => parseExplicitClinicalSections([
+    '## HPI',
+    'Not documented.',
+    '## ROS',
+    '- Constitutional: Not documented',
+    '- Respiratory: Not documented.',
+    '## Physical Examination',
+    '**General:** Not documented'
+  ].join('\n')), /placeholder-only hpi/i);
+});
+
+test('retains a section when at least one provider-documented finding is present', () => {
+  assert.deepEqual(parseExplicitClinicalSections([
+    'HPI: Symptoms began yesterday.',
+    'ROS:',
+    '- Constitutional: Not documented',
+    '- Respiratory: Reports cough.',
+    'Physical Examination: Lungs clear.'
+  ].join('\n')), {
+    hpi: 'Symptoms began yesterday.',
+    ros: '- Constitutional: Not documented\n- Respiratory: Reports cough.',
+    physicalExamination: 'Lungs clear.'
+  });
+});
+
 test('builds and hashes the v2 consumer artifact from an attested source', () => {
   const expected = artifact();
   const built = buildClinicalArtifact({

@@ -16,6 +16,7 @@
   "quickScribe": {
     "url": "https://YOUR-QUICKRCM-HOST.example",
     "attestedNotesUrl": "https://YOUR-QUICKRCM-HOST.example/TODO_ATTESTED_NOTES_PATH",
+    "noteIdUrlPattern": "",
     "selectors": {
       "authenticatedMarker": "TODO_CAPTURE_QUICKSCRIBE_AUTHENTICATED_MARKER",
       "loginMarker": "",

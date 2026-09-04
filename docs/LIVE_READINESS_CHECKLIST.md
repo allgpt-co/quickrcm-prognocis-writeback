@@ -2,6 +2,12 @@
 
 The workflow is blocked from live writes until every relevant item below is complete.
 
+The September 4, 2026 dev-environment source discovery is recorded in
+[`QUICKSCRIBE_DEV_UI_DISCOVERY.md`](./QUICKSCRIBE_DEV_UI_DISCOVERY.md). The current authenticated
+data has no eligible Attested note with substantive required sections and accepted ICD-10-CM
+diagnoses, and the rendered detail lacks several identity/attestation fields. Those are active
+safety blockers rather than selector values to guess around.
+
 ## 1. Remote browser login
 
 - Connect to noVNC through the SSH tunnel.

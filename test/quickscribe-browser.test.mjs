@@ -79,3 +79,57 @@ Physical Examination: Lungs clear.</pre>
   }
 });
 
+test('Playwright supports title-case status and row-click navigation with URL-derived identity', async () => {
+  const executablePath = await resolveChromiumExecutable({ projectRoot: process.cwd(), executablePath: '' });
+  assert.ok(executablePath, 'A Chromium executable is required for the browser fixture');
+  const browser = await chromium.launch({ headless: true, executablePath });
+  try {
+    const page = await browser.newPage();
+    await page.route('https://quickrcm.example.test/**', async (route) => {
+      const pathname = new URL(route.request().url()).pathname;
+      if (pathname === '/scribe/encounters') {
+        await route.fulfill({ contentType: 'text/html', body: `
+          <main id="main-content">
+            <table aria-label="Scribe encounters"><tbody>
+              <tr tabindex="0" onclick="location.href='/scribe/encounters/job-ignored'"><td>Ignored</td><td class="status">Completed</td></tr>
+              <tr tabindex="0" onclick="location.href='/scribe/encounters/job-2'"><td>Target</td><td class="status">Attested</td></tr>
+            </tbody></table>
+          </main>
+        ` });
+        return;
+      }
+      await route.fulfill({ contentType: 'text/html', body: `
+        <main id="main-content">
+          <span id="detail-status">Attested</span>
+          <span id="patient-id">patient-2</span><span id="first-name">Sample</span><span id="last-name">Patient</span><span id="dob">01/02/1980</span>
+          <span id="appointment-id">appointment-2</span><span id="service-date">09/04/2026</span><span id="appointment-type">Follow Up</span><span id="provider">Dr Example</span>
+          <time id="attested-at">2026-09-04T17:00:00.000Z</time><span id="attested-by">provider-1</span>
+          <pre id="final-note">HPI: Cough is improving.\nROS: Respiratory cough; denies fever.\nPhysical Examination: Lungs clear.</pre>
+          <div class="diagnosis accepted"><span class="code">R05.9</span><span class="description">Cough, unspecified</span></div>
+        </main>
+      ` });
+    });
+    const rowClickConfig = {
+      ...config,
+      attestedNotesUrl: 'https://quickrcm.example.test/scribe/encounters',
+      noteIdUrlPattern: '^/scribe/encounters/([^/]+)$',
+      selectors: {
+        ...config.selectors,
+        authenticatedMarker: '#main-content',
+        noteRows: 'table[aria-label="Scribe encounters"] tbody tr',
+        noteStatus: '.status',
+        noteOpenLink: '',
+        noteIdAttribute: '',
+        noteDetailRoot: '#main-content'
+      }
+    };
+    const source = new QuickScribeBrowser(page, rowClickConfig);
+    const records = await source.listAttestedArtifacts(10);
+    assert.equal(records.length, 1);
+    assert.equal(records[0].jobId, 'job-2');
+    assert.equal(records[0].status, 'ATTESTED');
+    await assert.doesNotReject(() => source.revalidate(records[0]));
+  } finally {
+    await browser.close();
+  }
+});

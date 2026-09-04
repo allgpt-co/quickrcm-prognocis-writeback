@@ -63,12 +63,19 @@ function validateQuickScribe(config) {
   if (appUrl.origin !== queueUrl.origin) {
     throw new Error('QuickScribe app and attested-notes URLs must use the same origin');
   }
+  pattern(quickScribe.noteIdUrlPattern, 'quickScribe.noteIdUrlPattern');
   requiredSelectors(selectors, 'quickScribe', [
-    'authenticatedMarker', 'noteRows', 'noteStatus', 'noteOpenLink', 'noteIdAttribute',
+    'authenticatedMarker', 'noteRows', 'noteStatus',
     'noteDetailRoot', 'detailStatus', 'patientId', 'patientFirstName', 'patientLastName',
     'patientDob', 'appointmentId', 'serviceDate', 'appointmentType', 'attestationAt',
     'attestationBy', 'finalNote', 'acceptedDiagnosisRows', 'diagnosisCode'
   ]);
+  if (!selectors.noteIdAttribute && !quickScribe.noteIdUrlPattern) {
+    throw new Error('QuickScribe requires a stable noteIdAttribute or noteIdUrlPattern');
+  }
+  if (!selectors.noteOpenLink && !quickScribe.noteIdUrlPattern) {
+    throw new Error('QuickScribe row-click navigation requires noteIdUrlPattern');
+  }
   rejectPlaceholders(selectors, 'quickScribe');
 }
 

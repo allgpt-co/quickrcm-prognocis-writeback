@@ -31,6 +31,15 @@ function headingLine(line) {
       ? { heading: normalizedHeading(withInline[1]), inline: withInline[2].trim(), markdown: true }
       : { heading: normalizedHeading(markdown[1]), inline: '', markdown: true };
   }
+  const bold = line.match(/^\s*\*\*\s*(.+?)\s*\*\*[ \t]*(.*)$/);
+  if (bold) {
+    const withInline = bold[1].match(/^([^:]+?)\s*:[ \t]*(.*)$/);
+    const heading = normalizedHeading(withInline ? withInline[1] : bold[1]);
+    if (CLINICAL_HEADINGS.has(heading) || OTHER_NOTE_HEADINGS.has(heading)) {
+      const inline = [withInline?.[2], bold[2]].filter(Boolean).join(' ').trim();
+      return { heading, inline, markdown: true };
+    }
+  }
   const clinical = line.match(/^\s*(history of present illness|hpi|review of systems|ros|physical examination|physical exam|pe)\s*:[ \t]*(.*)$/i);
   if (clinical) return { heading: normalizedHeading(clinical[1]), inline: clinical[2].trim() };
   const other = line.match(/^\s*(assessment|plan|subjective|objective|chief complaint|diagnoses?|medications|allergies|procedures?)\s*:[ \t]*(.*)$/i);

@@ -23,6 +23,25 @@ test('maps only explicit HPI, ROS, and Physical Examination headings', () => {
   });
 });
 
+test('maps QuickScribe bold clinical headings without treating bold findings as sections', () => {
+  assert.deepEqual(parseExplicitClinicalSections([
+    '**Subjective:**',
+    '**History of Present Illness:**',
+    'Cough is improving.',
+    '**Review of Systems:** Respiratory: cough. Denies fever.',
+    '**Objective:**',
+    '**Physical Examination:**',
+    '**General:** Alert and comfortable.',
+    '**Respiratory:** Lungs clear.',
+    '**Assessment:**',
+    'This text is deliberately not added to Physical Examination.'
+  ].join('\n')), {
+    hpi: 'Cough is improving.',
+    ros: 'Respiratory: cough. Denies fever.',
+    physicalExamination: '**General:** Alert and comfortable.\n**Respiratory:** Lungs clear.'
+  });
+});
+
 test('refuses semantic guessing from a generic Subjective/Objective SOAP note', () => {
   assert.throws(() => parseExplicitClinicalSections(
     'Subjective: cough\nObjective: lungs clear\nAssessment: viral illness\nPlan: fluids'

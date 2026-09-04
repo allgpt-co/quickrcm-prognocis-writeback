@@ -1,0 +1,82 @@
+{
+  "automation": {
+    "timezone": "America/Chicago",
+    "writeEnabled": false,
+    "draftOnly": true,
+    "maxRecordsPerRun": 10
+  },
+  "browser": {
+    "cdpEndpoint": "http://127.0.0.1:9223",
+    "headless": false,
+    "executablePath": "",
+    "userDataDir": ".runtime/prognocis-browser-profile",
+    "navigationTimeoutMs": 45000,
+    "actionTimeoutMs": 20000
+  },
+  "quickRcm": {
+    "baseUrl": "https://YOUR-QUICKRCM-HOST.example",
+    "queuePath": "/api/v2/scribe/prognocis-writeback",
+    "ackPath": "/api/v2/scribe/prognocis-writeback/{jobId}/ack",
+    "requestTimeoutMs": 30000
+  },
+  "prognocis": {
+    "url": "https://gulfbank.prognocis.com/prognocis/scrMasterFrame.jsp",
+    "loginUrl": "https://gulfbank.prognocis.com/prognocis/scrUserLogin.jsp?clinic=gulfbank",
+    "loginPerRun": false,
+    "loginTimeoutMs": 45000,
+    "popupTimeoutMs": 20000,
+    "patientSearchUrlPattern": "GenSearchFrame\\.action2",
+    "sectionSaveUrlPattern": "",
+    "draftSaveUrlPattern": "",
+    "draftStatusPattern": "^Draft$",
+    "editableStatusPattern": "^(Draft|Open|In Progress)$",
+    "hpiTemplateByAppointmentType": {},
+    "selectors": {
+      "loginUsername": "#username",
+      "loginPassword": "input[type=\"password\"]",
+      "loginButton": "input[value*=\"Login\" i]",
+      "selectPatient": "input[title=\"Select Patient\"]",
+      "patientFirstName": "TODO_CAPTURE_PATIENT_FIRST_NAME_INPUT",
+      "patientLastName": "TODO_CAPTURE_PATIENT_LAST_NAME_INPUT",
+      "patientSearchButton": "",
+      "patientResultRows": "TODO_CAPTURE_PATIENT_RESULT_ROWS",
+      "patientResultIdAttribute": "",
+      "activePatientIdentity": "TODO_CAPTURE_ACTIVE_PATIENT_IDENTITY",
+      "encounterMenu": "TODO_CAPTURE_ENCOUNTER_MENU",
+      "encounterRows": "TODO_CAPTURE_ENCOUNTER_ROWS",
+      "encounterDateCell": "TODO_CAPTURE_ENCOUNTER_DATE_CELL",
+      "encounterTypeCell": "TODO_CAPTURE_ENCOUNTER_TYPE_CELL",
+      "encounterProviderCell": "",
+      "encounterIdAttribute": "TODO_CAPTURE_ENCOUNTER_ID_ATTRIBUTE",
+      "encounterOpen": "",
+      "encounterEditorReady": "TODO_CAPTURE_ENCOUNTER_EDITOR_READY",
+      "hpiMenu": "TODO_CAPTURE_HPI_MENU",
+      "hpiField": "TODO_CAPTURE_HPI_NARRATIVE_FIELD",
+      "hpiTemplateButton": "",
+      "hpiTemplateResultRows": "",
+      "hpiTemplateSelectButton": "",
+      "hpiSaveButton": "TODO_CAPTURE_HPI_SAVE_BUTTON",
+      "rosMenu": "TODO_CAPTURE_ROS_MENU",
+      "rosField": "TODO_CAPTURE_ROS_NARRATIVE_FIELD",
+      "rosSaveButton": "TODO_CAPTURE_ROS_SAVE_BUTTON",
+      "physicalExaminationMenu": "TODO_CAPTURE_PHYSICAL_EXAMINATION_MENU",
+      "physicalExaminationField": "TODO_CAPTURE_PHYSICAL_EXAMINATION_COMMENT_FIELD",
+      "physicalExaminationSaveButton": "TODO_CAPTURE_PHYSICAL_EXAMINATION_SAVE_BUTTON",
+      "sectionSaveSuccess": "",
+      "diagnosisMenu": "TODO_CAPTURE_DIAGNOSIS_MENU",
+      "existingDiagnosisRows": "TODO_CAPTURE_EXISTING_DIAGNOSIS_ROWS",
+      "diagnosisAddButton": "TODO_CAPTURE_DIAGNOSIS_ADD_BUTTON",
+      "diagnosisSearchInput": "TODO_CAPTURE_DIAGNOSIS_SEARCH_INPUT",
+      "diagnosisSearchButton": "",
+      "diagnosisResultRows": "TODO_CAPTURE_DIAGNOSIS_RESULT_ROWS",
+      "diagnosisSelectButton": "",
+      "saveDraftButton": "TODO_CAPTURE_SAVE_DRAFT_BUTTON",
+      "draftSaveSuccess": "",
+      "draftStatus": "TODO_CAPTURE_DRAFT_STATUS"
+    }
+  },
+  "runtime": {
+    "lockFile": ".runtime/writeback.lock",
+    "auditFile": ".runtime/writeback-audit.jsonl"
+  }
+}

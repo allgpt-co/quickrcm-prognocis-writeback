@@ -1,0 +1,7 @@
+node_modules/
+.codex/
+.env
+config/writeback.json
+.runtime/
+playwright-report/
+test-results/

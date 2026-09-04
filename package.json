@@ -1,0 +1,22 @@
+{
+  "name": "quickrcm-prognocis-writeback",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Provider-approved QuickScribe clinical draft write-back into exact PrognoCIS encounters.",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "probe": "node src/cli.mjs probe",
+    "run": "node src/cli.mjs run",
+    "validate:config": "node src/cli.mjs validate-config",
+    "test": "node --test",
+    "check": "node --check src/cli.mjs && node --test"
+  },
+  "dependencies": {
+    "dotenv": "^16.6.1",
+    "playwright": "^1.55.0"
+  }
+}
+

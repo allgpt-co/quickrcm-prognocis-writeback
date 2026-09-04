@@ -41,5 +41,5 @@ test('builds and hashes the v2 consumer artifact from an attested source', () =>
     diagnoses: expected.diagnoses
   });
   assert.equal(built.artifactHash, expected.artifactHash);
-  assert.equal(built.artifactHash, '926967a84c0ffc39b68507ef263230fc6e7460ff9e9671226396bca86bce973c');
+  assert.equal(built.artifactHash, '3bd3f5f7cb176fc0d8dd4d220e714a1fa702df5fa5f9a57a55c7930842eae7af');
 });

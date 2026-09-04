@@ -6,12 +6,13 @@ import { artifact } from '../test-support/artifact.mjs';
 const artifacts = [artifact({ jobId: 'job-1' }), artifact({ jobId: 'job-2' })];
 const audit = { info: async () => {}, error: async () => {} };
 
-test('probe opens exact encounters but never acknowledges QuickRCM', async () => {
-  const acknowledgements = [];
+test('probe rechecks the browser source and never writes the local verified ledger', async () => {
+  const marked = [];
+  const revalidated = [];
   const result = await runWriteback({ automation: { writeEnabled: false, maxRecordsPerRun: 10 } }, {
-    client: {
-      getAttestedQueue: async () => artifacts,
-      acknowledgeVerifiedDraft: async (...args) => acknowledgements.push(args)
+    source: {
+      listAttestedArtifacts: async () => artifacts,
+      revalidate: async (value) => revalidated.push(value.jobId)
     },
     destination: {
       process: async (value, options) => {
@@ -19,19 +20,22 @@ test('probe opens exact encounters but never acknowledges QuickRCM', async () =>
         return { status: 'PROBED', ehrEncounterId: value.encounter.prognocisEncounterId };
       }
     },
+    ledger: { has: () => false, markVerified: async (...args) => marked.push(args) },
     audit
   });
   assert.equal(result.probed, 2);
-  assert.equal(result.acknowledged, 0);
-  assert.equal(acknowledgements.length, 0);
+  assert.equal(result.verified, 0);
+  assert.deepEqual(revalidated, ['job-1', 'job-2']);
+  assert.equal(marked.length, 0);
 });
 
-test('write mode acknowledges only drafts that passed reopened read-back', async () => {
-  const acknowledgements = [];
+test('write mode records only drafts that passed EHR read-back and a second source check', async () => {
+  const marked = [];
+  const revalidated = [];
   const result = await runWriteback({ automation: { writeEnabled: true, maxRecordsPerRun: 10 } }, {
-    client: {
-      getAttestedQueue: async () => artifacts,
-      acknowledgeVerifiedDraft: async (value, encounterId) => acknowledgements.push([value.jobId, encounterId])
+    source: {
+      listAttestedArtifacts: async () => artifacts,
+      revalidate: async (value) => revalidated.push(value.jobId)
     },
     destination: {
       process: async (value) => {
@@ -43,9 +47,30 @@ test('write mode acknowledges only drafts that passed reopened read-back', async
         return { status: 'DRAFT_VERIFIED', ehrEncounterId: 'ehr-encounter-9', duplicate: false };
       }
     },
+    ledger: {
+      has: () => false,
+      markVerified: async (proof) => marked.push(proof)
+    },
     audit
   });
-  assert.deepEqual(acknowledgements, [['job-1', 'ehr-encounter-9']]);
-  assert.equal(result.acknowledged, 1);
+  assert.equal(marked.length, 1);
+  assert.equal(marked[0].artifactHash, artifacts[0].artifactHash);
+  assert.deepEqual(revalidated, ['job-1', 'job-1', 'job-2']);
+  assert.equal(result.verified, 1);
   assert.equal(result.failed, 1);
+});
+
+test('verified ledger hash skips an already completed browser artifact', async () => {
+  let destinationCalls = 0;
+  const result = await runWriteback({ automation: { writeEnabled: true, maxRecordsPerRun: 10 } }, {
+    source: {
+      listAttestedArtifacts: async () => [artifacts[0]],
+      revalidate: async () => { throw new Error('should not revalidate a verified hash'); }
+    },
+    destination: { process: async () => { destinationCalls += 1; } },
+    ledger: { has: () => true, markVerified: async () => {} },
+    audit
+  });
+  assert.equal(result.skipped, 1);
+  assert.equal(destinationCalls, 0);
 });

@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 import { randomUUID } from 'node:crypto';
-import { newAutomationPage, openBrowser, closeBrowser } from './browser/session.mjs';
-import { QuickRcmClient } from './integrations/quickrcm-client.mjs';
+import { portalPage, openBrowser, closeBrowser } from './browser/session.mjs';
+import { QuickScribeBrowser } from './integrations/quickscribe-browser.mjs';
 import { PrognocisBrowser } from './integrations/prognocis-browser.mjs';
 import { AuditLogger } from './runtime/audit.mjs';
 import { loadConfig } from './runtime/config.mjs';
 import { acquireRunLock } from './runtime/lock.mjs';
+import { VerificationLedger } from './runtime/ledger.mjs';
 import { runWriteback } from './workflow/writeback.mjs';
 
 function parseArgs(argv) {
@@ -50,11 +51,12 @@ async function main() {
   await audit.init();
   let context;
   try {
-    const client = new QuickRcmClient(config.quickRcm, config.secrets.quickRcmApiKey);
     context = await openBrowser(config.browser);
-    const page = await newAutomationPage(context, config.prognocis.url);
+    const sourcePage = await portalPage(context, config.quickScribe.url);
+    const destinationPage = await portalPage(context, config.prognocis.url);
+    const source = new QuickScribeBrowser(sourcePage, config.quickScribe);
     const destination = new PrognocisBrowser(
-      page,
+      destinationPage,
       config.prognocis,
       config.automation,
       {
@@ -62,7 +64,9 @@ async function main() {
         password: config.secrets.prognocisPassword
       }
     );
-    const summary = await runWriteback(config, { client, destination, audit });
+    const ledger = new VerificationLedger(config.runtime.ledgerFile);
+    await ledger.init();
+    const summary = await runWriteback(config, { source, destination, ledger, audit });
     process.stdout.write(`${JSON.stringify(summary)}\n`);
     if (summary.failed > 0) process.exitCode = 1;
   } finally {
@@ -74,8 +78,7 @@ async function main() {
 main().catch((error) => {
   process.stderr.write(`quickrcm-prognocis-writeback: ${error.message}\n`);
   if (error.code === 'AUTH_REQUIRED') {
-    process.stderr.write('Open the remote Chrome through noVNC, log in to PrognoCIS, then rerun probe mode.\n');
+    process.stderr.write('Open the remote Chrome through noVNC, log in to QuickRCM and PrognoCIS, then rerun probe mode.\n');
   }
   process.exitCode = 1;
 });
-

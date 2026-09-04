@@ -21,11 +21,30 @@ function config() {
       actionTimeoutMs: 20_000,
       navigationTimeoutMs: 45_000
     },
-    quickRcm: {
-      baseUrl: 'https://quickrcm.example.test',
-      queuePath: '/queue',
-      ackPath: '/queue/{jobId}/ack',
-      requestTimeoutMs: 30_000
+    quickScribe: {
+      url: 'https://quickrcm.example.test',
+      attestedNotesUrl: 'https://quickrcm.example.test/attested',
+      selectors: {
+        authenticatedMarker: '#app',
+        noteRows: '.note-row',
+        noteStatus: '.status',
+        noteOpenLink: 'a.open',
+        noteIdAttribute: 'data-job-id',
+        noteDetailRoot: '#note-detail',
+        detailStatus: '#detail-status',
+        patientId: '#patient-id',
+        patientFirstName: '#first-name',
+        patientLastName: '#last-name',
+        patientDob: '#dob',
+        appointmentId: '#appointment-id',
+        serviceDate: '#service-date',
+        appointmentType: '#appointment-type',
+        attestationAt: '#attested-at',
+        attestationBy: '#attested-by',
+        finalNote: '#final-note',
+        acceptedDiagnosisRows: '.diagnosis.accepted',
+        diagnosisCode: '.code'
+      }
     },
     prognocis: {
       url: 'https://ehr.example.test/scrMasterFrame.jsp',
@@ -53,7 +72,8 @@ function config() {
     },
     runtime: {
       lockFile: '.runtime/writeback.lock',
-      auditFile: '.runtime/audit.jsonl'
+      auditFile: '.runtime/audit.jsonl',
+      ledgerFile: '.runtime/verified.jsonl'
     }
   };
 }
@@ -77,8 +97,11 @@ function addWriteSelectors(value) {
   });
 }
 
-test('probe configuration needs identity and encounter selectors only', () => {
+test('probe configuration requires both browser source and destination selectors', () => {
   assert.doesNotThrow(() => validateConfigObject(config()));
+  const missingSource = config();
+  delete missingSource.quickScribe.selectors.finalNote;
+  assert.throws(() => validateConfigObject(missingSource), /quickScribe.*finalNote/i);
 });
 
 test('write mode requires all three clinical sections, ICD-10, and draft proof', () => {
@@ -93,9 +116,8 @@ test('configuration refuses sign, finalize, and placeholder selectors', () => {
   const signing = config();
   signing.prognocis.selectors.signButton = '#sign';
   assert.throws(() => validateConfigObject(signing), /signing\/finalization/i);
-
   const placeholder = config();
-  placeholder.prognocis.selectors.encounterRows = 'TODO_CAPTURE_ROWS';
+  placeholder.quickScribe.selectors.noteRows = 'TODO_CAPTURE_ROWS';
   assert.throws(() => validateConfigObject(placeholder), /placeholder/i);
 });
 

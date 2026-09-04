@@ -4,13 +4,14 @@ function jobKey(jobId) {
   return crypto.createHash('sha256').update(String(jobId)).digest('hex');
 }
 
-export async function runWriteback(config, { client, destination, audit }) {
-  const artifacts = await client.getAttestedQueue(config.automation.maxRecordsPerRun);
+export async function runWriteback(config, { source, destination, ledger, audit }) {
+  const artifacts = await source.listAttestedArtifacts(config.automation.maxRecordsPerRun);
   const summary = {
     mode: config.automation.writeEnabled ? 'draft-write' : 'probe',
     queued: artifacts.length,
     probed: 0,
-    acknowledged: 0,
+    verified: 0,
+    skipped: 0,
     duplicates: 0,
     failed: 0
   };
@@ -24,6 +25,17 @@ export async function runWriteback(config, { client, destination, audit }) {
     const safeJobKey = jobKey(artifact.jobId);
     const started = Date.now();
     try {
+      if (config.automation.writeEnabled && ledger.has(artifact.artifactHash)) {
+        summary.skipped += 1;
+        await audit.info('writeback_record_already_verified', {
+          jobKey: safeJobKey,
+          artifactHash: artifact.artifactHash,
+          status: 'idempotent',
+          durationMs: Date.now() - started
+        });
+        continue;
+      }
+      await source.revalidate(artifact);
       const result = await destination.process(artifact, {
         writeEnabled: config.automation.writeEnabled
       });
@@ -42,10 +54,15 @@ export async function runWriteback(config, { client, destination, audit }) {
       if (result.status !== 'DRAFT_VERIFIED' || !result.ehrEncounterId) {
         throw new Error('PrognoCIS did not return verified-draft proof');
       }
-      await client.acknowledgeVerifiedDraft(artifact, result.ehrEncounterId);
-      summary.acknowledged += 1;
+      await source.revalidate(artifact);
+      await ledger.markVerified({
+        artifactHash: artifact.artifactHash,
+        jobKey: safeJobKey,
+        ehrEncounterId: result.ehrEncounterId
+      });
+      summary.verified += 1;
       if (result.duplicate) summary.duplicates += 1;
-      await audit.info('writeback_record_acknowledged', {
+      await audit.info('writeback_record_verified', {
         jobKey: safeJobKey,
         artifactHash: artifact.artifactHash,
         status: result.duplicate ? 'idempotent' : 'written',
@@ -65,4 +82,3 @@ export async function runWriteback(config, { client, destination, audit }) {
   }
   return summary;
 }
-

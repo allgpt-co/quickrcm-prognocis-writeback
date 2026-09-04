@@ -96,9 +96,7 @@ function hashInput(record) {
         system: diagnosis.system,
         code: diagnosis.code,
         description: diagnosis.description ?? '',
-        reviewStatus: diagnosis.reviewStatus,
-        acceptedAt: diagnosis.acceptedAt,
-        acceptedById: diagnosis.acceptedById
+        reviewStatus: diagnosis.reviewStatus
       }))
       .sort((left, right) => left.code.localeCompare(right.code))
   };
@@ -134,7 +132,7 @@ export function validateClinicalArtifact(value) {
   const diagnoses = artifact.diagnoses.map((rawDiagnosis, index) => {
     const diagnosis = requireObject(rawDiagnosis, `diagnoses[${index}]`);
     requireExactFields(diagnosis, new Set([
-      'system', 'code', 'description', 'reviewStatus', 'acceptedAt', 'acceptedById'
+      'system', 'code', 'description', 'reviewStatus'
     ]), `diagnoses[${index}]`);
     if (diagnosis.system !== 'ICD10CM') {
       throw new Error(`diagnoses[${index}] must use ICD10CM; procedure codes are outside this workflow`);
@@ -150,9 +148,7 @@ export function validateClinicalArtifact(value) {
       system: 'ICD10CM',
       code,
       description: optionalText(diagnosis.description, `diagnoses[${index}].description`, 1_000) ?? '',
-      reviewStatus: 'ACCEPTED',
-      acceptedAt: requireIsoTimestamp(diagnosis.acceptedAt, `diagnoses[${index}].acceptedAt`),
-      acceptedById: requireText(diagnosis.acceptedById, `diagnoses[${index}].acceptedById`, 100)
+      reviewStatus: 'ACCEPTED'
     };
   }).sort((left, right) => left.code.localeCompare(right.code));
   if (new Set(diagnoses.map(({ code }) => code)).size !== diagnoses.length) {

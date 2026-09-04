@@ -9,15 +9,39 @@
     "cdpEndpoint": "http://127.0.0.1:9223",
     "headless": false,
     "executablePath": "",
-    "userDataDir": ".runtime/prognocis-browser-profile",
+    "userDataDir": ".runtime/shared-clinical-browser-profile",
     "navigationTimeoutMs": 45000,
     "actionTimeoutMs": 20000
   },
-  "quickRcm": {
-    "baseUrl": "https://YOUR-QUICKRCM-HOST.example",
-    "queuePath": "/api/v2/scribe/prognocis-writeback",
-    "ackPath": "/api/v2/scribe/prognocis-writeback/{jobId}/ack",
-    "requestTimeoutMs": 30000
+  "quickScribe": {
+    "url": "https://YOUR-QUICKRCM-HOST.example",
+    "attestedNotesUrl": "https://YOUR-QUICKRCM-HOST.example/TODO_ATTESTED_NOTES_PATH",
+    "selectors": {
+      "authenticatedMarker": "TODO_CAPTURE_QUICKSCRIBE_AUTHENTICATED_MARKER",
+      "loginMarker": "",
+      "noteRows": "TODO_CAPTURE_ATTESTED_NOTE_ROWS",
+      "noteStatus": "TODO_CAPTURE_NOTE_STATUS_WITHIN_ROW",
+      "noteOpenLink": "TODO_CAPTURE_NOTE_DETAIL_LINK_WITHIN_ROW",
+      "noteIdAttribute": "TODO_CAPTURE_STABLE_JOB_ID_ATTRIBUTE",
+      "noteDetailRoot": "TODO_CAPTURE_NOTE_DETAIL_ROOT",
+      "detailStatus": "TODO_CAPTURE_DETAIL_ATTESTED_STATUS",
+      "patientId": "TODO_CAPTURE_QUICKRCM_PATIENT_ID",
+      "patientFirstName": "TODO_CAPTURE_PATIENT_FIRST_NAME",
+      "patientLastName": "TODO_CAPTURE_PATIENT_LAST_NAME",
+      "patientDob": "TODO_CAPTURE_PATIENT_DOB",
+      "prognocisPatientId": "",
+      "appointmentId": "TODO_CAPTURE_QUICKRCM_APPOINTMENT_ID",
+      "serviceDate": "TODO_CAPTURE_ENCOUNTER_SERVICE_DATE",
+      "appointmentType": "TODO_CAPTURE_APPOINTMENT_TYPE",
+      "providerName": "",
+      "prognocisEncounterId": "",
+      "attestationAt": "TODO_CAPTURE_ATTESTATION_TIMESTAMP",
+      "attestationBy": "TODO_CAPTURE_ATTESTING_PROVIDER",
+      "finalNote": "TODO_CAPTURE_PROVIDER_APPROVED_FINAL_NOTE",
+      "acceptedDiagnosisRows": "TODO_CAPTURE_ACCEPTED_ICD10_ROWS_ONLY",
+      "diagnosisCode": "TODO_CAPTURE_ICD10_CODE_WITHIN_ROW",
+      "diagnosisDescription": ""
+    }
   },
   "prognocis": {
     "url": "https://gulfbank.prognocis.com/prognocis/scrMasterFrame.jsp",
@@ -77,6 +101,7 @@
   },
   "runtime": {
     "lockFile": ".runtime/writeback.lock",
-    "auditFile": ".runtime/writeback-audit.jsonl"
+    "auditFile": ".runtime/writeback-audit.jsonl",
+    "ledgerFile": ".runtime/verified-drafts.jsonl"
   }
 }

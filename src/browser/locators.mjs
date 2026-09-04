@@ -1,6 +1,6 @@
 export class AuthenticationRequiredError extends Error {
-  constructor() {
-    super('PrognoCIS authentication is required in the persistent remote browser');
+  constructor(platform = 'PrognoCIS') {
+    super(`${platform} authentication is required in the persistent remote browser`);
     this.name = 'AuthenticationRequiredError';
     this.code = 'AUTH_REQUIRED';
   }
@@ -88,4 +88,3 @@ export async function visibleTextsInFrames(page, selector) {
   }
   return values;
 }
-

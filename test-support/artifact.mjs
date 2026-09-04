@@ -33,12 +33,9 @@ export function artifact(overrides = {}) {
       system: 'ICD10CM',
       code: 'R05.9',
       description: 'Cough, unspecified',
-      reviewStatus: 'ACCEPTED',
-      acceptedAt: '2026-09-04T17:01:00.000Z',
-      acceptedById: 'provider-1'
+      reviewStatus: 'ACCEPTED'
     }]
   };
   const merged = { ...base, ...overrides };
   return { ...merged, artifactHash: clinicalArtifactHash(merged) };
 }
-

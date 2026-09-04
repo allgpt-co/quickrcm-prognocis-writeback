@@ -18,6 +18,9 @@ function nonEmpty(value, label) {
 }
 
 function validUrl(value, label, { localHttp = false } = {}) {
+  if (typeof value === 'string' && /TODO_|YOUR-/i.test(value)) {
+    throw new Error(`${label} still contains an uncaptured placeholder`);
+  }
   let parsed;
   try {
     parsed = new URL(value);
@@ -40,28 +43,67 @@ function pattern(value, label) {
   }
 }
 
-function requiredSelectors(selectors, keys) {
-  for (const key of keys) nonEmpty(selectors[key], `prognocis.selectors.${key}`);
+function requiredSelectors(selectors, prefix, keys) {
+  for (const key of keys) nonEmpty(selectors[key], `${prefix}.selectors.${key}`);
 }
 
-function rejectUnsafeSelectors(selectors) {
+function rejectPlaceholders(selectors, prefix) {
   for (const [key, value] of Object.entries(selectors)) {
+    if (typeof value === 'string' && /^TODO_/i.test(value.trim())) {
+      throw new Error(`Replace the uncaptured selector placeholder: ${prefix}.selectors.${key}`);
+    }
+  }
+}
+
+function validateQuickScribe(config) {
+  const quickScribe = object(config.quickScribe, 'quickScribe');
+  const selectors = object(quickScribe.selectors, 'quickScribe.selectors');
+  const appUrl = validUrl(quickScribe.url, 'quickScribe.url');
+  const queueUrl = validUrl(quickScribe.attestedNotesUrl, 'quickScribe.attestedNotesUrl');
+  if (appUrl.origin !== queueUrl.origin) {
+    throw new Error('QuickScribe app and attested-notes URLs must use the same origin');
+  }
+  requiredSelectors(selectors, 'quickScribe', [
+    'authenticatedMarker', 'noteRows', 'noteStatus', 'noteOpenLink', 'noteIdAttribute',
+    'noteDetailRoot', 'detailStatus', 'patientId', 'patientFirstName', 'patientLastName',
+    'patientDob', 'appointmentId', 'serviceDate', 'appointmentType', 'attestationAt',
+    'attestationBy', 'finalNote', 'acceptedDiagnosisRows', 'diagnosisCode'
+  ]);
+  rejectPlaceholders(selectors, 'quickScribe');
+}
+
+function validatePrognocis(config) {
+  const prognocis = object(config.prognocis, 'prognocis');
+  const selectors = object(prognocis.selectors, 'prognocis.selectors');
+  const appUrl = validUrl(prognocis.url, 'prognocis.url');
+  const loginUrl = validUrl(prognocis.loginUrl, 'prognocis.loginUrl');
+  if (appUrl.origin !== loginUrl.origin) throw new Error('PrognoCIS app and login URLs must use the same origin');
+  if (typeof prognocis.loginPerRun !== 'boolean') throw new Error('prognocis.loginPerRun must be boolean');
+  pattern(prognocis.patientSearchUrlPattern, 'prognocis.patientSearchUrlPattern');
+  pattern(prognocis.sectionSaveUrlPattern, 'prognocis.sectionSaveUrlPattern');
+  pattern(prognocis.draftSaveUrlPattern, 'prognocis.draftSaveUrlPattern');
+  pattern(prognocis.draftStatusPattern, 'prognocis.draftStatusPattern');
+  pattern(prognocis.editableStatusPattern, 'prognocis.editableStatusPattern');
+  requiredSelectors(selectors, 'prognocis', [
+    'selectPatient', 'patientFirstName', 'patientLastName', 'patientResultRows',
+    'activePatientIdentity', 'encounterMenu', 'encounterRows', 'encounterDateCell',
+    'encounterTypeCell', 'encounterIdAttribute', 'encounterEditorReady'
+  ]);
+  for (const key of Object.keys(selectors)) {
     if (/sign|finali[sz]e|submitClaim/i.test(key)) {
       throw new Error(`Clinical write-back must not configure a signing/finalization selector: ${key}`);
     }
-    if (typeof value === 'string' && /^TODO_/i.test(value.trim())) {
-      throw new Error(`Replace the uncaptured selector placeholder: prognocis.selectors.${key}`);
-    }
   }
+  rejectPlaceholders(selectors, 'prognocis');
+  return { prognocis, selectors };
 }
 
 export function validateConfigObject(config) {
   const automation = object(config.automation, 'automation');
   const browser = object(config.browser, 'browser');
-  const quickRcm = object(config.quickRcm, 'quickRcm');
-  const prognocis = object(config.prognocis, 'prognocis');
-  const selectors = object(prognocis.selectors, 'prognocis.selectors');
   const runtime = object(config.runtime, 'runtime');
+  validateQuickScribe(config);
+  const { prognocis, selectors } = validatePrognocis(config);
 
   if (typeof automation.writeEnabled !== 'boolean') throw new Error('automation.writeEnabled must be boolean');
   if (automation.draftOnly !== true) throw new Error('automation.draftOnly must remain true');
@@ -89,42 +131,13 @@ export function validateConfigObject(config) {
     }
   }
 
-  validUrl(quickRcm.baseUrl, 'quickRcm.baseUrl', { localHttp: true });
-  nonEmpty(quickRcm.queuePath, 'quickRcm.queuePath');
-  nonEmpty(quickRcm.ackPath, 'quickRcm.ackPath');
-  if (!quickRcm.queuePath.startsWith('/') || !quickRcm.ackPath.startsWith('/')) {
-    throw new Error('QuickRCM endpoint paths must start with /');
-  }
-  if (!quickRcm.ackPath.includes('{jobId}')) throw new Error('quickRcm.ackPath must contain {jobId}');
-  if (!Number.isInteger(quickRcm.requestTimeoutMs) || quickRcm.requestTimeoutMs < 1_000) {
-    throw new Error('quickRcm.requestTimeoutMs must be at least 1000');
-  }
-
-  const appUrl = validUrl(prognocis.url, 'prognocis.url');
-  const loginUrl = validUrl(prognocis.loginUrl, 'prognocis.loginUrl');
-  if (appUrl.origin !== loginUrl.origin) throw new Error('PrognoCIS app and login URLs must use the same origin');
-  if (typeof prognocis.loginPerRun !== 'boolean') throw new Error('prognocis.loginPerRun must be boolean');
-  pattern(prognocis.patientSearchUrlPattern, 'prognocis.patientSearchUrlPattern');
-  pattern(prognocis.sectionSaveUrlPattern, 'prognocis.sectionSaveUrlPattern');
-  pattern(prognocis.draftSaveUrlPattern, 'prognocis.draftSaveUrlPattern');
-  pattern(prognocis.draftStatusPattern, 'prognocis.draftStatusPattern');
-  pattern(prognocis.editableStatusPattern, 'prognocis.editableStatusPattern');
-
-  requiredSelectors(selectors, [
-    'selectPatient', 'patientFirstName', 'patientLastName', 'patientResultRows',
-    'activePatientIdentity', 'encounterMenu', 'encounterRows', 'encounterDateCell',
-    'encounterTypeCell', 'encounterIdAttribute', 'encounterEditorReady'
-  ]);
-  rejectUnsafeSelectors(selectors);
-
   if (automation.writeEnabled) {
-    requiredSelectors(selectors, [
+    requiredSelectors(selectors, 'prognocis', [
       'hpiMenu', 'hpiField', 'hpiSaveButton',
       'rosMenu', 'rosField', 'rosSaveButton',
       'physicalExaminationMenu', 'physicalExaminationField', 'physicalExaminationSaveButton',
       'diagnosisMenu', 'diagnosisAddButton', 'diagnosisSearchInput',
-      'diagnosisResultRows', 'existingDiagnosisRows',
-      'saveDraftButton', 'draftStatus'
+      'diagnosisResultRows', 'existingDiagnosisRows', 'saveDraftButton', 'draftStatus'
     ]);
     if (!selectors.sectionSaveSuccess && !prognocis.sectionSaveUrlPattern) {
       throw new Error('Write mode requires sectionSaveSuccess or sectionSaveUrlPattern');
@@ -136,7 +149,7 @@ export function validateConfigObject(config) {
     nonEmpty(prognocis.editableStatusPattern, 'prognocis.editableStatusPattern');
   }
   if (selectors.hpiTemplateButton) {
-    requiredSelectors(selectors, ['hpiTemplateResultRows']);
+    requiredSelectors(selectors, 'prognocis', ['hpiTemplateResultRows']);
     const templates = object(prognocis.hpiTemplateByAppointmentType, 'prognocis.hpiTemplateByAppointmentType');
     if (Object.keys(templates).length === 0) {
       throw new Error('prognocis.hpiTemplateByAppointmentType must contain exact mappings');
@@ -145,6 +158,7 @@ export function validateConfigObject(config) {
 
   nonEmpty(runtime.lockFile, 'runtime.lockFile');
   nonEmpty(runtime.auditFile, 'runtime.auditFile');
+  nonEmpty(runtime.ledgerFile, 'runtime.ledgerFile');
   return config;
 }
 
@@ -180,14 +194,13 @@ export async function loadConfig(
   config.browser.userDataDir = path.resolve(PROJECT_ROOT, config.browser.userDataDir);
   config.runtime.lockFile = path.resolve(PROJECT_ROOT, config.runtime.lockFile);
   config.runtime.auditFile = path.resolve(PROJECT_ROOT, config.runtime.auditFile);
+  config.runtime.ledgerFile = path.resolve(PROJECT_ROOT, config.runtime.ledgerFile);
   config.secrets = {
-    quickRcmApiKey: process.env.QUICKRCM_API_KEY ?? '',
     prognocisUsername: process.env.PROGNOCIS_USERNAME ?? '',
     prognocisPassword: process.env.PROGNOCIS_PASSWORD ?? '',
     writeAck: process.env.CLINICAL_WRITE_ACK ?? ''
   };
   requireWriteApproval(config, config.secrets.writeAck);
-  if (requireSecrets && !config.secrets.quickRcmApiKey) throw new Error('QUICKRCM_API_KEY is required');
   if (requireSecrets && config.prognocis.loginPerRun
     && (!config.secrets.prognocisUsername || !config.secrets.prognocisPassword)) {
     throw new Error('PROGNOCIS_USERNAME and PROGNOCIS_PASSWORD are required for per-run login');

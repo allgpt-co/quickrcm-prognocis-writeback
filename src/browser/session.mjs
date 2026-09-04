@@ -84,7 +84,16 @@ export async function closeBrowser(context) {
   await connection.browser.close();
 }
 
-export async function newAutomationPage(context, url) {
+export async function portalPage(context, url) {
+  const origin = new URL(url).origin;
+  const existing = context.pages().find((candidate) => {
+    try {
+      return !candidate.isClosed() && new URL(candidate.url()).origin === origin;
+    } catch {
+      return false;
+    }
+  });
+  if (existing) return existing;
   const page = await context.newPage();
   await page.goto(url, { waitUntil: 'domcontentloaded' });
   return page;

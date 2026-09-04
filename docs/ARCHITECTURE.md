@@ -1,126 +1,115 @@
-# Reverse Clinical Write-Back Architecture
+# Browser-to-Browser Clinical Write-Back Architecture
 
-## Purpose
+## Why there is no QuickRCM API dependency
 
-The existing integration sends future patients and appointments from PrognoCIS into QuickRCM. This repository implements the opposite direction after a visit: it returns only provider-approved QuickScribe documentation to the original PrognoCIS encounter as an unsigned draft.
+Both applications already expose the required information and actions in their authenticated web interfaces. Playwright attaches to the persistent remote Chrome and works through those rendered pages:
 
-## Trust boundaries
-
-There are three independent systems:
-
-1. QuickScribe captures audio and generates proposed documentation and diagnosis codes.
-2. QuickRCM owns review state, provider attestation, accepted-code state, the export queue, and acknowledgement.
-3. PrognoCIS remains the clinical system of record and owns final clinician signature.
-
-The browser consumer does not trust an item merely because an API returned it. It independently validates the status, attestation proof, section completeness, code review proof, allowed fields, and producer hash before opening a chart.
-
-## Version 2 artifact
-
-The consumer expects this logical shape:
-
-```json
-{
-  "version": 2,
-  "source": "quickrcm-quickscribe",
-  "status": "ATTESTED",
-  "jobId": "opaque-scribe-job-id",
-  "patient": {
-    "id": "opaque-quickrcm-patient-id",
-    "firstName": "Sample",
-    "lastName": "Patient",
-    "dob": "1980-01-02",
-    "prognocisPatientId": "optional-retained-ehr-id"
-  },
-  "encounter": {
-    "appointmentId": "opaque-quickrcm-appointment-id",
-    "startTime": "2026-09-04T15:30:00.000Z",
-    "appointmentType": "Follow Up",
-    "providerName": "Dr Example",
-    "prognocisEncounterId": "optional-retained-ehr-encounter-id"
-  },
-  "attestation": {
-    "at": "2026-09-04T17:00:00.000Z",
-    "byId": "opaque-provider-id"
-  },
-  "sections": {
-    "hpi": "Provider-approved HPI narrative",
-    "ros": "Provider-approved ROS narrative",
-    "physicalExamination": "Provider-approved physical examination narrative"
-  },
-  "diagnoses": [
-    {
-      "system": "ICD10CM",
-      "code": "R05.9",
-      "description": "Cough, unspecified",
-      "reviewStatus": "ACCEPTED",
-      "acceptedAt": "2026-09-04T17:01:00.000Z",
-      "acceptedById": "opaque-reviewer-id"
-    }
-  ],
-  "artifactHash": "canonical-SHA-256"
-}
+```text
+QuickRCM/QuickScribe tab --read--> in-memory validated artifact
+                                             |
+                                             v
+PrognoCIS tab <-------------write Draft through exact UI controls
 ```
 
-Raw audio and raw transcript fields are not part of the contract. Unknown fields are rejected so they cannot leak through an accidental producer change.
+No QuickRCM API endpoint, service key, producer deployment, or API acknowledgement is part of this repository.
 
-The hash covers all fields except `artifactHash`, including review and attestation state. QuickRCM and this consumer must share the same canonical hash algorithm and a fixed test vector before deployment.
+## Shared browser topology
+
+The operator and Playwright use different routes to the same headed Chrome process:
+
+```text
+Operator laptop browser
+  -> SSH tunnel localhost:6080
+  -> noVNC/websockify
+  -> x11vnc
+  -> Xvfb display :99
+  -> Chrome windows
+
+Automation process
+  -> localhost CDP :9223
+  -> the same Chrome context and authenticated tabs
+```
+
+The operator uses noVNC to log into QuickRCM and PrognoCIS and complete MFA. The automation later reuses those authenticated browser sessions. noVNC does not parse or move clinical data.
+
+## Source extraction
+
+The QuickScribe adapter first opens the configured attested-notes screen. It reads each rendered row and accepts only rows whose status element resolves to `ATTESTED`. It requires a stable job ID and same-origin detail link.
+
+On the detail screen it independently confirms:
+
+- The stable job ID is unchanged.
+- Detail status is still `ATTESTED`.
+- Patient first name, last name, DOB, and stable QuickRCM patient ID are present.
+- Appointment ID, service date, and appointment type are present.
+- Provider attestation actor and timestamp are present.
+- The provider-approved final note is non-empty.
+- At least one explicitly accepted ICD-10-CM row exists.
+
+The adapter does not inspect network responses for clinical content. It reads locators in the rendered DOM.
+
+## Clinical section mapping
+
+The source note must explicitly contain these headings or their exact long forms:
+
+- `HPI` or `History of Present Illness`
+- `ROS` or `Review of Systems`
+- `PE`, `Physical Exam`, or `Physical Examination`
+
+All three sections must be non-empty and occur once. A generic SOAP note containing only Subjective and Objective is rejected because automatically guessing which sentences belong in HPI, ROS, or Physical Examination would be unsafe.
+
+The first implementation maps narrative text only. It does not infer symptom checkboxes, negative findings, organ-system selections, or normal/abnormal exam states from prose.
+
+## Diagnosis mapping
+
+The QuickScribe configuration has a selector specifically for accepted diagnosis rows. Only visible rows under that selector are read. Each code must match the ICD-10-CM shape and the in-memory artifact labels it `ACCEPTED`.
+
+CPT, HCPCS, suggested, rejected, and unreviewed rows are not read. If the live interface does not distinguish accepted diagnoses with a stable DOM state, the workflow remains blocked until that distinction is available.
+
+## In-memory artifact and hash
+
+The extracted record exists only in process memory. It contains:
+
+- Source job ID and `ATTESTED` status
+- Patient and encounter identity
+- Provider attestation proof
+- HPI, ROS, and Physical Examination
+- Accepted ICD-10-CM diagnoses
+- A canonical SHA-256 hash
+
+No clinical artifact JSON file is written to disk. Audit logs contain only a one-way job hash, artifact hash, stage, controlled status/error code, count, and duration.
+
+## Double source validation
+
+Browser pages can change while an automation run is active. The workflow therefore reads the same QuickScribe note three times:
+
+1. Initial extraction.
+2. Immediately before opening/writing the PrognoCIS destination.
+3. After PrognoCIS close/reopen verification and before recording local completion.
+
+All three reads must remain `ATTESTED` and have the same artifact hash. A change stops the record. If a provider edits the source during the EHR write, the EHR result is not marked complete and requires operator reconciliation.
 
 ## Exact destination resolution
 
-Patient matching always requires exactly one visible row containing the same normalized first name, last name, and DOB. When the inbound appointment sync begins retaining a PrognoCIS patient ID, that ID is an additional requirement; it never replaces demographic verification.
+Patient matching requires exactly one row with the same normalized first name, last name, and DOB. A retained PrognoCIS patient ID, when visible in QuickRCM, becomes an additional required match.
 
-Encounter matching always requires:
+Encounter matching requires service date and exact appointment type. Provider name and retained encounter ID become additional requirements when visible. Zero or multiple matches stop the record.
 
-- The service date derived in the configured clinic timezone.
-- Exact normalized appointment type equality.
-- Exact provider equality when `providerName` is supplied.
-- Exact retained encounter ID when `prognocisEncounterId` is supplied.
-- Exactly one final matching row.
+## Draft write and verification
 
-Zero matches and multiple matches are both terminal record failures. The integration never chooses the first row and never creates a patient or encounter.
+Before filling anything, Playwright checks that the encounter has an approved editable status and reads HPI, ROS, Physical Examination, and existing diagnoses.
 
-## Draft write algorithm
+- Exact existing text is treated as idempotent.
+- Empty text may be populated.
+- Different non-empty text causes a conflict stop.
+- Only missing accepted ICD-10-CM codes are added.
+- Every code search must yield exactly one matching code result.
+- Only configured section Save and Save Draft controls are used.
 
-For each validated artifact, the destination does the following sequentially:
+After saving, Playwright closes the editor, returns to the PrognoCIS entry screen, selects the patient again, and reopens the encounter. It verifies every section, every expected ICD-10 code, stable encounter ID, and Draft status.
 
-1. Open the exact chart and exact encounter.
-2. In probe mode, stop here and return `PROBED` without opening clinical fields.
-3. In write mode, read HPI, ROS, Physical Examination, and existing diagnosis rows.
-4. Require the encounter status to match a narrowly configured editable state; Signed, Finalized, or otherwise unknown states stop the record.
-5. If all approved text and codes already exist and the status is Draft, return an idempotent verified result.
-6. If any non-empty section differs from the approved text, stop before writing anything.
-7. Fill only empty sections, checking the field value before using each section's Save control.
-8. Search each missing accepted ICD-10-CM code and require exactly one code result before selecting it.
-9. Use only the configured Save Draft control.
-10. Require an authoritative save response or configured success marker and visible Draft status.
-11. Close the editor, return to the application entry point, select the exact patient again, and reopen the exact encounter.
-12. Re-read all three sections, every accepted ICD-10 code, the encounter ID, and Draft status.
-13. Return `DRAFT_VERIFIED` only when the complete comparison succeeds.
-14. Send QuickRCM an acknowledgement containing only destination, status, artifact hash, and opaque EHR encounter ID.
+Only then does the private local ledger record the artifact hash, hashed job ID, opaque EHR encounter ID, timestamp, and `DRAFT_VERIFIED` status. The ledger contains no name, DOB, or clinical content.
 
-If the process stops after a partial save, the next run performs the same full pre-write read. Exact existing fields are skipped, empty fields are resumed, and different text causes a stop. No blind save retry is performed.
+## Retry behavior
 
-## HPI template handling
-
-Some PrognoCIS encounters keep the HPI narrative disabled until a visit template is selected with the binoculars control. The optional template automation uses an exact configuration map from QuickRCM appointment type to PrognoCIS template name. It requires exactly one matching template row. There is no default template and no fuzzy choice.
-
-## Why only narrative ROS and physical examination
-
-The initial implementation writes provider-approved narrative text into the three destination clinical sections. It does not infer positive/negative symptom checkboxes, organ-system selections, normal/abnormal states, or structured exam findings from prose. Those transformations would require a separately reviewed structured source schema and explicit mapping rules.
-
-## Browser topology
-
-In the remote setup, Chrome is headed and runs on Xvfb display `:99`. An operator reaches it through noVNC for credentials and MFA. Playwright reaches the same Chrome over the localhost CDP port. Closing the Playwright connection does not terminate the operator's persistent Chrome.
-
-CDP can fully control an authenticated browser, so the configuration accepts it only on localhost. noVNC should be exposed only through an SSH tunnel or another approved private network path.
-
-## Audit behavior
-
-Runtime audit lines contain only:
-
-- Random run ID
-- Hashed job key
-- Artifact SHA-256
-- Counts, mode, status, duration, and controlled error code
-
-Names, DOB, section text, code descriptions, transcripts, and credentials are not logged.
+The local ledger skips a previously verified hash. If the ledger is lost, destination read-back still recognizes an exact existing draft as an idempotent success. A partial previous run is resumed only when existing content is either exact or empty. Different content is never overwritten.

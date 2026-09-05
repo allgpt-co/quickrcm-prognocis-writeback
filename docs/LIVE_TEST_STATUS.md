@@ -40,6 +40,8 @@ The supervised reverse write-back canary is complete. The attested QuickScribe d
 
 No supervised reverse write-back canary steps remain. Final repository checks pass.
 
+Hermes deployment and scheduling are documented in [`HERMES_CRON_GUIDE.md`](HERMES_CRON_GUIDE.md).
+
 ## Known Integration Issue
 
 The automatic PrognoCIS-to-QuickRCM appointment synchronization placed the test appointment in a tenant that was not visible to the active QuickRCM user. A visible test appointment therefore had to be created manually. This tenant-routing problem remains separate from the reverse clinical write-back test.

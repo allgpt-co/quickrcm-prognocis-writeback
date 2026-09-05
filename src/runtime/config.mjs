@@ -64,17 +64,39 @@ function validateQuickScribe(config) {
     throw new Error('QuickScribe app and attested-notes URLs must use the same origin');
   }
   pattern(quickScribe.noteIdUrlPattern, 'quickScribe.noteIdUrlPattern');
+  pattern(quickScribe.patientNamePattern, 'quickScribe.patientNamePattern');
+  pattern(quickScribe.diagnosisPageUrlPattern, 'quickScribe.diagnosisPageUrlPattern');
   requiredSelectors(selectors, 'quickScribe', [
     'authenticatedMarker', 'noteRows', 'noteStatus',
-    'noteDetailRoot', 'detailStatus', 'patientId', 'patientFirstName', 'patientLastName',
-    'patientDob', 'appointmentId', 'serviceDate', 'appointmentType', 'attestationAt',
-    'attestationBy', 'finalNote', 'acceptedDiagnosisRows', 'diagnosisCode'
+    'noteDetailRoot', 'detailStatus', 'attestationAt', 'attestationBy', 'finalNote',
+    'acceptedDiagnosisRows', 'diagnosisCode'
   ]);
   if (!selectors.noteIdAttribute && !quickScribe.noteIdUrlPattern) {
     throw new Error('QuickScribe requires a stable noteIdAttribute or noteIdUrlPattern');
   }
   if (!selectors.noteOpenLink && !quickScribe.noteIdUrlPattern) {
     throw new Error('QuickScribe row-click navigation requires noteIdUrlPattern');
+  }
+  if (selectors.queuePatientName) {
+    requiredSelectors(selectors, 'quickScribe', [
+      'queuePatientName', 'queuePatientId', 'queueServiceDate',
+      'patientSearchInput', 'patientRows', 'patientNameCell', 'patientDobCell',
+      'appointmentRows', 'appointmentPatientNameCell', 'appointmentPatientIdCell',
+      'appointmentTypeCell', 'diagnosisOpenButton'
+    ]);
+    validUrl(quickScribe.patientDirectoryUrl, 'quickScribe.patientDirectoryUrl');
+    validUrl(quickScribe.appointmentDirectoryUrl, 'quickScribe.appointmentDirectoryUrl');
+    nonEmpty(quickScribe.patientNamePattern, 'quickScribe.patientNamePattern');
+    const ids = object(quickScribe.appointmentIdByJobId, 'quickScribe.appointmentIdByJobId');
+    if (Object.keys(ids).length === 0 && !selectors.appointmentIdAttribute) {
+      throw new Error('Joined QuickScribe UI mode requires appointmentIdByJobId or appointmentIdAttribute');
+    }
+    object(quickScribe.appointmentTypeMap ?? {}, 'quickScribe.appointmentTypeMap');
+  } else {
+    requiredSelectors(selectors, 'quickScribe', [
+      'patientId', 'patientFirstName', 'patientLastName', 'patientDob',
+      'appointmentId', 'serviceDate', 'appointmentType'
+    ]);
   }
   rejectPlaceholders(selectors, 'quickScribe');
 }
@@ -87,10 +109,25 @@ function validatePrognocis(config) {
   if (appUrl.origin !== loginUrl.origin) throw new Error('PrognoCIS app and login URLs must use the same origin');
   if (typeof prognocis.loginPerRun !== 'boolean') throw new Error('prognocis.loginPerRun must be boolean');
   pattern(prognocis.patientSearchUrlPattern, 'prognocis.patientSearchUrlPattern');
+  pattern(prognocis.encounterHistoryUrlPattern, 'prognocis.encounterHistoryUrlPattern');
+  pattern(prognocis.encounterIdPattern, 'prognocis.encounterIdPattern');
+  const sectionUrlPatterns = object(
+    prognocis.sectionUrlPatterns ?? {},
+    'prognocis.sectionUrlPatterns'
+  );
+  for (const section of ['hpi', 'ros', 'physicalExamination']) {
+    pattern(sectionUrlPatterns[section], `prognocis.sectionUrlPatterns.${section}`);
+  }
   pattern(prognocis.sectionSaveUrlPattern, 'prognocis.sectionSaveUrlPattern');
   pattern(prognocis.draftSaveUrlPattern, 'prognocis.draftSaveUrlPattern');
   pattern(prognocis.draftStatusPattern, 'prognocis.draftStatusPattern');
   pattern(prognocis.editableStatusPattern, 'prognocis.editableStatusPattern');
+  if (prognocis.diagnosisSearchPath) {
+    const diagnosisSearchUrl = new URL(prognocis.diagnosisSearchPath, appUrl);
+    if (diagnosisSearchUrl.origin !== appUrl.origin) {
+      throw new Error('prognocis.diagnosisSearchPath must remain same-origin');
+    }
+  }
   requiredSelectors(selectors, 'prognocis', [
     'selectPatient', 'patientFirstName', 'patientLastName', 'patientResultRows',
     'activePatientIdentity', 'encounterMenu', 'encounterRows', 'encounterDateCell',
@@ -144,7 +181,7 @@ export function validateConfigObject(config) {
       'rosMenu', 'rosField', 'rosSaveButton',
       'physicalExaminationMenu', 'physicalExaminationField', 'physicalExaminationSaveButton',
       'diagnosisMenu', 'diagnosisAddButton', 'diagnosisSearchInput',
-      'diagnosisResultRows', 'existingDiagnosisRows', 'saveDraftButton', 'draftStatus'
+      'diagnosisResultRows', 'existingDiagnosisRows', 'saveDraftButton'
     ]);
     if (!selectors.sectionSaveSuccess && !prognocis.sectionSaveUrlPattern) {
       throw new Error('Write mode requires sectionSaveSuccess or sectionSaveUrlPattern');
@@ -154,12 +191,31 @@ export function validateConfigObject(config) {
     }
     nonEmpty(prognocis.draftStatusPattern, 'prognocis.draftStatusPattern');
     nonEmpty(prognocis.editableStatusPattern, 'prognocis.editableStatusPattern');
+    if (!selectors.draftStatus && !selectors.encounterStatusCell) {
+      throw new Error('Write mode requires draftStatus or encounterStatusCell');
+    }
+    if (selectors.diagnosisSelectButton && !selectors.diagnosisConfirmButton) {
+      throw new Error('Diagnosis checkbox selection requires diagnosisConfirmButton');
+    }
   }
   if (selectors.hpiTemplateButton) {
     requiredSelectors(selectors, 'prognocis', ['hpiTemplateResultRows']);
     const templates = object(prognocis.hpiTemplateByAppointmentType, 'prognocis.hpiTemplateByAppointmentType');
     if (Object.keys(templates).length === 0) {
       throw new Error('prognocis.hpiTemplateByAppointmentType must contain exact mappings');
+    }
+  }
+  if (selectors.hpiComplaintLookupButton) {
+    requiredSelectors(selectors, 'prognocis', [
+      'hpiComplaintSearchInput', 'hpiComplaintRows', 'hpiComplaintNameCell',
+      'hpiComplaintSelectButton', 'hpiComplaintConfirmButton'
+    ]);
+    const complaints = object(
+      prognocis.hpiComplaintByAppointmentType,
+      'prognocis.hpiComplaintByAppointmentType'
+    );
+    if (Object.keys(complaints).length === 0) {
+      throw new Error('prognocis.hpiComplaintByAppointmentType must contain exact mappings');
     }
   }
 

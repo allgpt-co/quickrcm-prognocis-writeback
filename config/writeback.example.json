@@ -34,6 +34,10 @@
       "appointmentId": "TODO_CAPTURE_QUICKRCM_APPOINTMENT_ID",
       "serviceDate": "TODO_CAPTURE_ENCOUNTER_SERVICE_DATE",
       "appointmentType": "TODO_CAPTURE_APPOINTMENT_TYPE",
+      "appointmentAllTab": "",
+      "appointmentSearchInput": "",
+      "appointmentMrnSearchInput": "",
+      "appointmentSearchButton": "",
       "providerName": "",
       "prognocisEncounterId": "",
       "attestationAt": "TODO_CAPTURE_ATTESTATION_TIMESTAMP",
@@ -51,6 +55,12 @@
     "loginTimeoutMs": 45000,
     "popupTimeoutMs": 20000,
     "patientSearchUrlPattern": "GenSearchFrame\\.action2",
+    "sectionUrlPatterns": {
+      "hpi": "TODO_CAPTURE_HPI_FRAME_URL_PATTERN",
+      "ros": "TODO_CAPTURE_ROS_FRAME_URL_PATTERN",
+    "physicalExamination": "TODO_CAPTURE_PHYSICAL_EXAMINATION_FRAME_URL_PATTERN"
+    },
+    "diagnosisSearchPath": "",
     "sectionSaveUrlPattern": "",
     "draftSaveUrlPattern": "",
     "draftStatusPattern": "^Draft$",

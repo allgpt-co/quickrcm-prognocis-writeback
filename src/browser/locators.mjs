@@ -24,32 +24,58 @@ export async function firstVisible(scope, selector, label, timeout = 20_000) {
 }
 
 export async function firstVisibleInFrames(page, selector, label, timeout = 20_000) {
-  const attempts = pageScopes(page).map(async (scope) => ({
-    scope,
-    locator: await firstVisible(scope, selector, label, timeout)
-  }));
-  try {
-    return await Promise.any(attempts);
-  } catch {
-    throw new Error(`Visible element not found in any frame for ${label}`);
+  if (typeof selector !== 'string' || !selector.trim()) {
+    throw new Error(`No selector configured for ${label}`);
   }
+  const deadline = Date.now() + timeout;
+  do {
+    for (const scope of pageScopes(page)) {
+      try {
+        const locator = scope.locator(selector).first();
+        if (await locator.isVisible().catch(() => false)) return { scope, locator };
+      } catch {
+        // A legacy frameset may replace its frames while a patient or encounter is selected.
+      }
+    }
+    await page.waitForTimeout(100);
+  } while (Date.now() < deadline);
+  throw new Error(`Visible element not found in any frame for ${label}`);
 }
 
 export async function optionalVisibleInFrames(page, selector) {
   if (!selector) return null;
   for (const scope of pageScopes(page)) {
-    const locator = scope.locator(selector).first();
-    if (await locator.isVisible().catch(() => false)) return { scope, locator };
+    const matches = scope.locator(selector);
+    const count = await matches.count().catch(() => 0);
+    for (let index = 0; index < count; index += 1) {
+      const locator = matches.nth(index);
+      if (await locator.isVisible().catch(() => false)) return { scope, locator };
+    }
   }
   return null;
 }
 
-export async function clickInFrames(page, selector, label, { allowHiddenLegacy = false } = {}) {
-  const visible = await optionalVisibleInFrames(page, selector);
-  if (visible) {
-    await visible.locator.click();
-    return visible;
-  }
+export async function clickInFrames(
+  page,
+  selector,
+  label,
+  { allowHiddenLegacy = false, timeout = 20_000 } = {}
+) {
+  const deadline = Date.now() + timeout;
+  do {
+    const visible = await optionalVisibleInFrames(page, selector);
+    if (visible) {
+      try {
+        await visible.locator.click();
+        return visible;
+      } catch (error) {
+        if (!/context|detach|closed|destroyed/i.test(error.message) || Date.now() >= deadline) {
+          throw error;
+        }
+      }
+    }
+    await page.waitForTimeout(100);
+  } while (Date.now() < deadline);
   if (allowHiddenLegacy) {
     for (const scope of pageScopes(page)) {
       const locator = scope.locator(selector).first();

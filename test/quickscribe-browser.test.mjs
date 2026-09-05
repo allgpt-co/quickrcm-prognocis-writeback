@@ -133,3 +133,107 @@ test('Playwright supports title-case status and row-click navigation with URL-de
     await browser.close();
   }
 });
+
+test('Playwright joins rendered queue, patient, appointment, and accepted-coding pages', async () => {
+  const executablePath = await resolveChromiumExecutable({ projectRoot: process.cwd(), executablePath: '' });
+  assert.ok(executablePath, 'A Chromium executable is required for the browser fixture');
+  const browser = await chromium.launch({ headless: true, executablePath });
+  try {
+    const page = await browser.newPage();
+    await page.route('https://quickrcm.example.test/**', async (route) => {
+      const pathname = new URL(route.request().url()).pathname;
+      if (pathname === '/scribe/encounters') {
+        await route.fulfill({ contentType: 'text/html', body: `
+          <main id="app"><table><tbody>
+            <tr onclick="location.href='/scribe/encounters/job-3'">
+              <td><p class="patient">Sample Patient</p></td><td class="mrn">MRN-3</td>
+              <td class="date">Sep 4, 2026</td><td></td><td></td><td class="status">Attested</td>
+            </tr>
+          </tbody></table></main>
+        ` });
+        return;
+      }
+      if (pathname === '/ehr/patients') {
+        await route.fulfill({ contentType: 'text/html', body: `
+          <main id="app"><input placeholder="Search patients..."><table><tbody>
+            <tr><td></td><td class="name">Sample Patient</td><td class="dob">01-02-1980</td></tr>
+          </tbody></table></main>
+        ` });
+        return;
+      }
+      if (pathname === '/scribe/appointments') {
+        await route.fulfill({ contentType: 'text/html', body: `
+          <main id="app"><input placeholder="Search patient"><table><tbody>
+            <tr><td><p class="name">Sample Patient</p><p class="mrn">MRN MRN-3</p></td>
+              <td><p class="type">Follow-up</p></td><td></td><td></td><td>Completed</td><td><button>Review note</button></td></tr>
+          </tbody></table></main>
+        ` });
+        return;
+      }
+      if (pathname === '/medical-coding/outpatient-billing/code-3') {
+        await route.fulfill({ contentType: 'text/html', body: `
+          <main id="app"><ul><li class="accepted"><input aria-label="diagnosis code" value="R05.9">
+            <input aria-label="diagnosis description" value="Cough, unspecified"><button aria-pressed="true">Accepted</button>
+          </li></ul></main>
+        ` });
+        return;
+      }
+      await route.fulfill({ contentType: 'text/html', body: `
+        <main id="app"><section id="detail"><span id="detail-status">Attested</span>
+          <time id="attested-at">Sep 4, 2026, 2:15 PM</time><span id="attested-by">provider-3</span>
+          <pre id="final-note">HPI: Cough is improving.\nROS: Respiratory cough; denies fever.\nPhysical Examination: Lungs clear.</pre>
+          <button id="codes" onclick="location.href='/medical-coding/outpatient-billing/code-3'">View Generated Codes</button>
+        </section></main>
+      ` });
+    });
+    const joinedConfig = {
+      url: 'https://quickrcm.example.test',
+      attestedNotesUrl: 'https://quickrcm.example.test/scribe/encounters',
+      noteIdUrlPattern: '^/scribe/encounters/([^/]+)$',
+      patientDirectoryUrl: 'https://quickrcm.example.test/ehr/patients',
+      appointmentDirectoryUrl: 'https://quickrcm.example.test/scribe/appointments',
+      patientNamePattern: '^(.+?)\\s+(\\S+)$',
+      diagnosisPageUrlPattern: '^/medical-coding/outpatient-billing/[^/]+$',
+      appointmentIdByJobId: { 'job-3': 'appointment-3' },
+      appointmentTypeMap: { 'Follow-up': 'Follow Up' },
+      selectors: {
+        authenticatedMarker: '#app',
+        noteRows: 'main table tbody tr',
+        noteStatus: '.status',
+        noteOpenLink: '',
+        noteIdAttribute: '',
+        queuePatientName: '.patient',
+        queuePatientId: '.mrn',
+        queueServiceDate: '.date',
+        noteDetailRoot: '#detail',
+        detailStatus: '#detail-status',
+        attestationAt: '#attested-at',
+        attestationBy: '#attested-by',
+        finalNote: '#final-note',
+        patientSearchInput: 'input[placeholder="Search patients..."]',
+        patientRows: 'main table tbody tr',
+        patientNameCell: '.name',
+        patientDobCell: '.dob',
+        appointmentSearchInput: 'input[placeholder="Search patient"]',
+        appointmentRows: 'main table tbody tr',
+        appointmentPatientNameCell: '.name',
+        appointmentPatientIdCell: '.mrn',
+        appointmentTypeCell: '.type',
+        diagnosisOpenButton: '#codes',
+        acceptedDiagnosisRows: '.accepted',
+        diagnosisCode: 'input[aria-label="diagnosis code"]',
+        diagnosisDescription: 'input[aria-label="diagnosis description"]'
+      }
+    };
+    const source = new QuickScribeBrowser(page, joinedConfig);
+    const [record] = await source.listAttestedArtifacts(1);
+    assert.equal(record.patient.id, 'MRN-3');
+    assert.equal(record.patient.dob, '1980-01-02');
+    assert.equal(record.encounter.appointmentId, 'appointment-3');
+    assert.equal(record.encounter.appointmentType, 'Follow Up');
+    assert.equal(record.attestation.at.slice(0, 10), '2026-09-04');
+    assert.deepEqual(record.diagnoses.map(({ code }) => code), ['R05.9']);
+  } finally {
+    await browser.close();
+  }
+});

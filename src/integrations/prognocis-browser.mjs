@@ -81,6 +81,20 @@ async function firstEditableInFrames(page, selector, label, timeoutMs = 10_000) 
   throw new Error(`Editable element not found in any frame for ${label}`);
 }
 
+async function contextPageWithVisibleSelector(page, selector, label, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  do {
+    const candidates = [...page.context().pages()].reverse();
+    for (const candidate of candidates) {
+      if (candidate.isClosed()) continue;
+      const found = await optionalVisibleInFrames(candidate, selector).catch(() => null);
+      if (found) return candidate;
+    }
+    await page.waitForTimeout(100);
+  } while (Date.now() < deadline);
+  throw new Error(`Visible element not found in any browser page for ${label}`);
+}
+
 async function firstVisibleInSectionFrame(
   page,
   selector,
@@ -247,16 +261,18 @@ export class PrognocisBrowser {
   }
 
   async openPatientSearch() {
-    const popupPromise = this.page.context().waitForEvent('page', {
-      timeout: this.config.popupTimeoutMs
-    }).catch(() => null);
     await clickInFrames(this.page, this.selectors.selectPatient, 'PrognoCIS Select Patient');
-    let searchPage = await popupPromise;
-    if (!searchPage && this.config.patientSearchUrlPattern) {
-      const pattern = new RegExp(this.config.patientSearchUrlPattern, 'i');
-      searchPage = this.page.context().pages().find((candidate) => pattern.test(candidate.url()));
+    const searchPage = await contextPageWithVisibleSelector(
+      this.page,
+      this.selectors.patientFirstName,
+      'PrognoCIS patient search',
+      this.config.popupTimeoutMs
+    );
+    if (this.config.patientSearchUrlPattern
+      && searchPage !== this.page
+      && !new RegExp(this.config.patientSearchUrlPattern, 'i').test(searchPage.url())) {
+      throw new Error('PrognoCIS patient search opened an unexpected URL');
     }
-    searchPage ??= this.page;
     this.watchDialogs(searchPage);
     await searchPage.waitForLoadState('domcontentloaded');
     return searchPage;
@@ -467,15 +483,17 @@ export class PrognocisBrowser {
     if (!complaintName) {
       throw new Error('No exact HPI complaint mapping exists for this appointment type');
     }
-    const popupPromise = this.editorPage.context().waitForEvent('page', {
-      timeout: this.config.popupTimeoutMs
-    }).catch(() => null);
     await clickInFrames(
       this.editorPage,
       this.selectors.hpiComplaintLookupButton,
       'HPI complaint lookup'
     );
-    const complaintPage = await popupPromise ?? this.editorPage;
+    const complaintPage = await contextPageWithVisibleSelector(
+      this.editorPage,
+      this.selectors.hpiComplaintSearchInput,
+      'HPI complaint search',
+      this.config.popupTimeoutMs
+    );
     this.watchDialogs(complaintPage);
     const search = await firstVisibleInFrames(
       complaintPage,
@@ -678,9 +696,6 @@ export class PrognocisBrowser {
         'add ICD-10-CM diagnosis'
       );
     }
-    const popupPromise = this.editorPage.context().waitForEvent('page', {
-      timeout: this.config.popupTimeoutMs
-    }).catch(() => null);
     if (this.config.diagnosisSearchPath) {
       await add.scope.evaluate((path) => {
         window.open(
@@ -692,7 +707,12 @@ export class PrognocisBrowser {
     } else {
       await add.locator.click();
     }
-    const searchPage = await popupPromise ?? this.editorPage;
+    const searchPage = await contextPageWithVisibleSelector(
+      this.editorPage,
+      this.selectors.diagnosisSearchInput,
+      'ICD-10-CM diagnosis search',
+      this.config.popupTimeoutMs
+    );
     this.watchDialogs(searchPage);
     const search = await firstVisibleInFrames(
       searchPage,

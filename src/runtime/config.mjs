@@ -86,6 +86,13 @@ function validateQuickScribe(config) {
     ]);
     validUrl(quickScribe.patientDirectoryUrl, 'quickScribe.patientDirectoryUrl');
     validUrl(quickScribe.appointmentDirectoryUrl, 'quickScribe.appointmentDirectoryUrl');
+    const codingJobOperationUrl = validUrl(
+      quickScribe.codingJobOperationUrl,
+      'quickScribe.codingJobOperationUrl'
+    );
+    if (!codingJobOperationUrl.pathname.endsWith('/operations/get-coding-job-by-id')) {
+      throw new Error('quickScribe.codingJobOperationUrl must target get-coding-job-by-id');
+    }
     nonEmpty(quickScribe.patientNamePattern, 'quickScribe.patientNamePattern');
     const ids = object(quickScribe.appointmentIdByJobId, 'quickScribe.appointmentIdByJobId');
     if (Object.keys(ids).length === 0 && !selectors.appointmentIdAttribute) {

@@ -140,8 +140,41 @@ test('Playwright joins rendered queue, patient, appointment, and accepted-coding
   const browser = await chromium.launch({ headless: true, executablePath });
   try {
     const page = await browser.newPage();
+    await page.addInitScript(() => {
+      localStorage.setItem('wasp:sessionId', JSON.stringify('fixture-session'));
+    });
     await page.route('https://quickrcm.example.test/**', async (route) => {
       const pathname = new URL(route.request().url()).pathname;
+      if (pathname === '/operations/get-coding-job-by-id') {
+        await route.fulfill({
+          contentType: 'application/json',
+          body: JSON.stringify({ json: {
+            id: 'code-3',
+            organizationId: 'organization-3',
+            appointmentId: 'appointment-3',
+            scribeJobId: 'job-3',
+            status: 'COMPLETED',
+            appointment: {
+              id: 'appointment-3',
+              organizationId: 'organization-3',
+              appointmentType: 'Follow-up',
+              startTime: '2026-09-05T15:30:00.000Z',
+              patient: {
+                firstName: 'Sample', lastName: 'Patient', mrn: 'MRN-3'
+              }
+            },
+            scribeJob: { id: 'job-3' },
+            extractedData: {
+              acceptedCodes: ['R05.9'],
+              agent2: { icd_codes: [
+                { code: 'R05.9', description: 'Cough, unspecified' },
+                { code: 'J06.9', description: 'Suggestion only' }
+              ] }
+            }
+          } })
+        });
+        return;
+      }
       if (pathname === '/scribe/encounters') {
         await route.fulfill({ contentType: 'text/html', body: `
           <main id="app"><table><tbody>
@@ -172,8 +205,8 @@ test('Playwright joins rendered queue, patient, appointment, and accepted-coding
       }
       if (pathname === '/medical-coding/outpatient-billing/code-3') {
         await route.fulfill({ contentType: 'text/html', body: `
-          <main id="app"><ul><li class="accepted"><input aria-label="diagnosis code" value="R05.9">
-            <input aria-label="diagnosis description" value="Cough, unspecified"><button aria-pressed="true">Accepted</button>
+          <main id="app"><ul><li class="suggested"><input aria-label="diagnosis code" value="R05.9">
+            <input aria-label="diagnosis description" value="Cough, unspecified"><button>Needs review</button>
           </li></ul></main>
         ` });
         return;
@@ -194,6 +227,7 @@ test('Playwright joins rendered queue, patient, appointment, and accepted-coding
       appointmentDirectoryUrl: 'https://quickrcm.example.test/scribe/appointments',
       patientNamePattern: '^(.+?)\\s+(\\S+)$',
       diagnosisPageUrlPattern: '^/medical-coding/outpatient-billing/[^/]+$',
+      codingJobOperationUrl: 'https://quickrcm.example.test/operations/get-coding-job-by-id',
       appointmentIdByJobId: { 'job-3': 'appointment-3' },
       appointmentTypeMap: { 'Follow-up': 'Follow Up' },
       selectors: {
@@ -231,8 +265,62 @@ test('Playwright joins rendered queue, patient, appointment, and accepted-coding
     assert.equal(record.patient.dob, '1980-01-02');
     assert.equal(record.encounter.appointmentId, 'appointment-3');
     assert.equal(record.encounter.appointmentType, 'Follow Up');
+    assert.equal(record.encounter.startTime, '2026-09-05T15:30:00.000Z');
     assert.equal(record.attestation.at.slice(0, 10), '2026-09-04');
     assert.deepEqual(record.diagnoses.map(({ code }) => code), ['R05.9']);
+  } finally {
+    await browser.close();
+  }
+});
+
+test('Playwright rejects a persisted coding job linked to another Scribe job', async () => {
+  const executablePath = await resolveChromiumExecutable({ projectRoot: process.cwd(), executablePath: '' });
+  assert.ok(executablePath, 'A Chromium executable is required for the browser fixture');
+  const browser = await chromium.launch({ headless: true, executablePath });
+  try {
+    const page = await browser.newPage();
+    await page.addInitScript(() => {
+      localStorage.setItem('wasp:sessionId', JSON.stringify('fixture-session'));
+    });
+    await page.route('https://quickrcm.example.test/**', async (route) => {
+      const pathname = new URL(route.request().url()).pathname;
+      if (pathname === '/operations/get-coding-job-by-id') {
+        await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ json: {
+          id: 'code-4',
+          organizationId: 'organization-4',
+          appointmentId: 'appointment-4',
+          scribeJobId: 'different-job',
+          status: 'COMPLETED',
+          appointment: {
+            id: 'appointment-4',
+            organizationId: 'organization-4',
+            appointmentType: 'Follow-up',
+            startTime: '2026-09-05T15:30:00.000Z',
+            patient: { firstName: 'Sample', lastName: 'Patient', mrn: 'MRN-4' }
+          },
+          extractedData: {
+            acceptedCodes: ['R05.9'],
+            agent2: { icd_codes: [{ code: 'R05.9', description: 'Cough' }] }
+          }
+        } }) });
+        return;
+      }
+      await route.fulfill({ contentType: 'text/html', body: '<main id="app"></main>' });
+    });
+    await page.goto('https://quickrcm.example.test/medical-coding/outpatient-billing/code-4');
+    const source = new QuickScribeBrowser(page, {
+      url: 'https://quickrcm.example.test',
+      diagnosisPageUrlPattern: '^/medical-coding/outpatient-billing/[^/]+$',
+      codingJobOperationUrl: 'https://quickrcm.example.test/operations/get-coding-job-by-id',
+      appointmentIdByJobId: { 'job-4': 'appointment-4' },
+      selectors: {}
+    });
+    await assert.rejects(
+      () => source.readPersistedCodingReview({
+        jobId: 'job-4', patientId: 'MRN-4', patientName: 'Sample Patient'
+      }),
+      /does not belong to the attested Scribe job/
+    );
   } finally {
     await browser.close();
   }

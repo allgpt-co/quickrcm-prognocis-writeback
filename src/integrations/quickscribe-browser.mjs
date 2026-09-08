@@ -88,6 +88,50 @@ function namesFromFullName(value, configuredPattern) {
   return { firstName, lastName };
 }
 
+function acceptedCodeValue(value) {
+  const raw = typeof value === 'string' ? value : value?.code;
+  return normalize(raw).split('::', 1)[0].toUpperCase();
+}
+
+function diagnosesFromPersistedReview(codingJob) {
+  const extractedData = codingJob?.extractedData;
+  const acceptedCodes = Array.isArray(extractedData?.acceptedCodes)
+    ? extractedData.acceptedCodes.map(acceptedCodeValue).filter(Boolean)
+    : [];
+  if (acceptedCodes.length === 0) {
+    throw new Error('Persisted QuickRCM coding review has no human-accepted ICD-10-CM diagnoses');
+  }
+  if (new Set(acceptedCodes).size !== acceptedCodes.length) {
+    throw new Error('Persisted QuickRCM coding review contains duplicate accepted diagnoses');
+  }
+
+  const candidates = Array.isArray(extractedData?.agent2?.icd_codes)
+    ? extractedData.agent2.icd_codes
+    : [];
+  const byCode = new Map();
+  for (const candidate of candidates) {
+    const code = normalize(candidate?.code).toUpperCase();
+    if (!code) continue;
+    if (byCode.has(code)) {
+      throw new Error(`Persisted QuickRCM coding suggestions contain duplicate ICD-10-CM code ${code}`);
+    }
+    byCode.set(code, candidate);
+  }
+
+  return acceptedCodes.map((code) => {
+    const candidate = byCode.get(code);
+    if (!candidate) {
+      throw new Error(`Human-accepted ICD-10-CM code ${code} is absent from persisted coding suggestions`);
+    }
+    return {
+      system: 'ICD10CM',
+      code,
+      description: normalize(candidate.description),
+      reviewStatus: 'ACCEPTED'
+    };
+  });
+}
+
 export class QuickScribeBrowser {
   constructor(page, config) {
     this.page = page;
@@ -198,7 +242,106 @@ export class QuickScribeBrowser {
     return targets;
   }
 
-  async readDiagnoses({ openFromDetail = false } = {}) {
+  codingJobIdFromUrl(value) {
+    const parsed = new URL(value, this.config.url);
+    if (this.config.diagnosisPageUrlPattern
+      && !new RegExp(this.config.diagnosisPageUrlPattern).test(parsed.pathname)) {
+      throw new Error('QuickScribe diagnosis page URL does not match the configured coding route');
+    }
+    const codingJobId = normalize(parsed.pathname.split('/').filter(Boolean).at(-1));
+    if (!codingJobId) throw new Error('QuickScribe diagnosis page has no stable coding job ID');
+    return codingJobId;
+  }
+
+  async readPersistedCodingReview(target) {
+    if (!this.config.codingJobOperationUrl) return null;
+    const codingJobId = this.codingJobIdFromUrl(this.page.url());
+    const result = await this.page.evaluate(async ({ operationUrl, codingJobId: id }) => {
+      const rawSession = localStorage.getItem('wasp:sessionId');
+      if (!rawSession) return { error: 'QuickRCM browser session is unavailable' };
+      let session;
+      try {
+        session = JSON.parse(rawSession);
+      } catch {
+        session = rawSession;
+      }
+      const bearer = typeof session === 'string'
+        ? session
+        : session?.sessionId ?? session?.token;
+      if (!bearer) return { error: 'QuickRCM browser session is invalid' };
+
+      let response;
+      try {
+        response = await fetch(operationUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${bearer}`
+          },
+          body: JSON.stringify({ json: { id } })
+        });
+      } catch {
+        return { error: 'QuickRCM persisted coding review request failed' };
+      }
+      if (!response.ok) {
+        return { error: `QuickRCM persisted coding review returned HTTP ${response.status}` };
+      }
+      let body;
+      try {
+        body = await response.json();
+      } catch {
+        return { error: 'QuickRCM persisted coding review returned invalid JSON' };
+      }
+      return { codingJob: body?.json ?? body };
+    }, { operationUrl: this.config.codingJobOperationUrl, codingJobId });
+    if (result?.error) throw new Error(result.error);
+
+    const codingJob = result?.codingJob;
+    if (!codingJob || typeof codingJob !== 'object') {
+      throw new Error('QuickRCM persisted coding review returned no coding job');
+    }
+    if (normalize(codingJob.id) !== codingJobId) {
+      throw new Error('QuickRCM persisted coding job identity does not match the coding page URL');
+    }
+    if (normalize(codingJob.scribeJobId) !== target.jobId
+      || (codingJob.scribeJob?.id && normalize(codingJob.scribeJob.id) !== target.jobId)) {
+      throw new Error('QuickRCM persisted coding job does not belong to the attested Scribe job');
+    }
+    if (!['COMPLETED', 'PASSED'].includes(canonicalStatus(codingJob.status))) {
+      throw new Error('QuickRCM persisted coding job is not complete');
+    }
+
+    const configuredAppointmentId = normalize(this.config.appointmentIdByJobId?.[target.jobId]);
+    const codingAppointmentId = normalize(codingJob.appointmentId);
+    if (!configuredAppointmentId || configuredAppointmentId !== codingAppointmentId) {
+      throw new Error('QuickRCM persisted coding job appointment does not match the configured appointment');
+    }
+    if (normalize(codingJob.appointment?.id) !== codingAppointmentId) {
+      throw new Error('QuickRCM persisted coding job contains inconsistent appointment identity');
+    }
+    if (codingJob.appointment?.organizationId
+      && normalize(codingJob.appointment.organizationId) !== normalize(codingJob.organizationId)) {
+      throw new Error('QuickRCM persisted coding job contains inconsistent organization identity');
+    }
+
+    const persistedPatient = codingJob.appointment?.patient;
+    if (!persistedPatient
+      || normalize(persistedPatient.mrn) !== normalize(target.patientId)
+      || normalize(`${persistedPatient.firstName} ${persistedPatient.lastName}`) !== normalize(target.patientName)) {
+      throw new Error('QuickRCM persisted coding job patient does not match the attested queue record');
+    }
+    const startTime = isoTimestamp(codingJob.appointment?.startTime, 'persisted appointment start time');
+    return {
+      codingJob: {
+        appointmentId: codingAppointmentId,
+        appointmentType: normalize(codingJob.appointment?.appointmentType),
+        startTime
+      },
+      diagnoses: diagnosesFromPersistedReview(codingJob)
+    };
+  }
+
+  async readDiagnoses(target, { openFromDetail = false } = {}) {
     if (openFromDetail) {
       const previousUrl = this.page.url();
       await this.page.locator(this.selectors.diagnosisOpenButton).first().click();
@@ -211,25 +354,34 @@ export class QuickScribeBrowser {
         throw new Error('QuickScribe diagnosis page URL does not match the configured coding route');
       }
     }
-    const result = await firstVisibleInFrames(
-      this.page,
-      this.selectors.acceptedDiagnosisRows,
-      'accepted QuickScribe ICD-10-CM diagnoses'
-    );
-    const rows = result.scope.locator(this.selectors.acceptedDiagnosisRows);
-    const diagnoses = [];
-    for (let index = 0; index < await rows.count(); index += 1) {
-      const row = rows.nth(index);
-      if (!(await row.isVisible().catch(() => false))) continue;
-      const codeLocator = row.locator(this.selectors.diagnosisCode).first();
-      const code = normalize(await readField(codeLocator).catch(() => ''));
-      const description = this.selectors.diagnosisDescription
-        ? normalize(await readField(row.locator(this.selectors.diagnosisDescription).first()).catch(() => ''))
-        : '';
-      diagnoses.push({ system: 'ICD10CM', code, description, reviewStatus: 'ACCEPTED' });
+    const persisted = await this.readPersistedCodingReview(target);
+    const result = await optionalVisibleInFrames(this.page, this.selectors.acceptedDiagnosisRows);
+    const uiDiagnoses = [];
+    if (result) {
+      const rows = result.scope.locator(this.selectors.acceptedDiagnosisRows);
+      for (let index = 0; index < await rows.count(); index += 1) {
+        const row = rows.nth(index);
+        if (!(await row.isVisible().catch(() => false))) continue;
+        const codeLocator = row.locator(this.selectors.diagnosisCode).first();
+        const code = normalize(await readField(codeLocator).catch(() => ''));
+        const description = this.selectors.diagnosisDescription
+          ? normalize(await readField(row.locator(this.selectors.diagnosisDescription).first()).catch(() => ''))
+          : '';
+        uiDiagnoses.push({ system: 'ICD10CM', code, description, reviewStatus: 'ACCEPTED' });
+      }
     }
-    if (diagnoses.length === 0) throw new Error('ATTESTED QuickScribe note has no explicit accepted ICD-10-CM diagnoses');
-    return diagnoses;
+    if (persisted && uiDiagnoses.length > 0) {
+      const persistedCodes = persisted.diagnoses.map(({ code }) => code).sort();
+      const uiCodes = uiDiagnoses.map(({ code }) => code.toUpperCase()).sort();
+      if (JSON.stringify(persistedCodes) !== JSON.stringify(uiCodes)) {
+        throw new Error('Rendered and persisted QuickRCM accepted diagnosis decisions do not match');
+      }
+    }
+    if (persisted) return persisted;
+    if (uiDiagnoses.length === 0) {
+      throw new Error('ATTESTED QuickScribe note has no explicit accepted ICD-10-CM diagnoses');
+    }
+    return { codingJob: null, diagnoses: uiDiagnoses };
   }
 
   usesJoinedRenderedUi() {
@@ -414,6 +566,25 @@ export class QuickScribeBrowser {
       };
     }
 
+    const diagnosisReview = await this.readDiagnoses(target, {
+      openFromDetail: this.usesJoinedRenderedUi()
+    });
+    if (diagnosisReview.codingJob) {
+      if (encounter.appointmentId !== diagnosisReview.codingJob.appointmentId) {
+        throw new Error('Rendered and persisted QuickRCM appointment identities do not match');
+      }
+      const persistedType = this.config.appointmentTypeMap?.[
+        diagnosisReview.codingJob.appointmentType
+      ] ?? diagnosisReview.codingJob.appointmentType;
+      if (persistedType && normalize(persistedType) !== normalize(encounter.appointmentType)) {
+        throw new Error('Rendered and persisted QuickRCM appointment types do not match');
+      }
+      encounter = {
+        ...encounter,
+        startTime: diagnosisReview.codingJob.startTime
+      };
+    }
+
     return buildClinicalArtifact({
       status,
       jobId,
@@ -424,7 +595,7 @@ export class QuickScribeBrowser {
         byId: attestationBy
       },
       finalNote,
-      diagnoses: await this.readDiagnoses({ openFromDetail: this.usesJoinedRenderedUi() })
+      diagnoses: diagnosisReview.diagnoses
     });
   }
 

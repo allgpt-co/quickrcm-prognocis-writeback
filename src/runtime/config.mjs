@@ -6,6 +6,15 @@ import dotenv from 'dotenv';
 export const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 export const WRITE_ACKNOWLEDGEMENT = 'I_ACKNOWLEDGE_ATTESTED_CLINICAL_DRAFT_WRITES';
 
+export function credentialsFromEnvironment(environment = process.env) {
+  return {
+    quickRcmEmail: environment.Quick_rcm_email ?? '',
+    quickRcmPassword: environment.Quick_rcm_password ?? '',
+    prognocisUsername: environment.prognosis_username ?? '',
+    prognocisPassword: environment.prognosis_password ?? ''
+  };
+}
+
 function object(value, label) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error(`${label} must be an object`);
@@ -62,6 +71,17 @@ function validateQuickScribe(config) {
   const queueUrl = validUrl(quickScribe.attestedNotesUrl, 'quickScribe.attestedNotesUrl');
   if (appUrl.origin !== queueUrl.origin) {
     throw new Error('QuickScribe app and attested-notes URLs must use the same origin');
+  }
+  if (selectors.loginMarker) {
+    const loginUrl = validUrl(quickScribe.loginUrl, 'quickScribe.loginUrl');
+    if (appUrl.origin !== loginUrl.origin) {
+      throw new Error('QuickScribe app and login URLs must use the same origin');
+    }
+    nonEmpty(quickScribe.organizationName, 'quickScribe.organizationName');
+    requiredSelectors(selectors, 'quickScribe', [
+      'loginEmail', 'loginPassword', 'loginSubmit',
+      'organizationTrigger', 'organizationOptions'
+    ]);
   }
   pattern(quickScribe.noteIdUrlPattern, 'quickScribe.noteIdUrlPattern');
   pattern(quickScribe.patientNamePattern, 'quickScribe.patientNamePattern');
@@ -266,14 +286,17 @@ export async function loadConfig(
   config.runtime.auditFile = path.resolve(PROJECT_ROOT, config.runtime.auditFile);
   config.runtime.ledgerFile = path.resolve(PROJECT_ROOT, config.runtime.ledgerFile);
   config.secrets = {
-    prognocisUsername: process.env.PROGNOCIS_USERNAME ?? '',
-    prognocisPassword: process.env.PROGNOCIS_PASSWORD ?? '',
+    ...credentialsFromEnvironment(),
     writeAck: process.env.CLINICAL_WRITE_ACK ?? ''
   };
   requireWriteApproval(config, config.secrets.writeAck);
+  if (requireSecrets && config.quickScribe.selectors.loginMarker
+    && (!config.secrets.quickRcmEmail || !config.secrets.quickRcmPassword)) {
+    throw new Error('Quick_rcm_email and Quick_rcm_password are required for automatic QuickRCM login');
+  }
   if (requireSecrets && config.prognocis.loginPerRun
     && (!config.secrets.prognocisUsername || !config.secrets.prognocisPassword)) {
-    throw new Error('PROGNOCIS_USERNAME and PROGNOCIS_PASSWORD are required for per-run login');
+    throw new Error('prognosis_username and prognosis_password are required for automatic PrognoCIS login');
   }
   return config;
 }

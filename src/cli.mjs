@@ -1,6 +1,11 @@
 #!/usr/bin/env node
 import { randomUUID } from 'node:crypto';
-import { portalPage, openBrowser, closeBrowser } from './browser/session.mjs';
+import {
+  closeBrowser,
+  closeStaleLoginTargets,
+  openBrowser,
+  portalPage
+} from './browser/session.mjs';
 import { QuickScribeBrowser } from './integrations/quickscribe-browser.mjs';
 import { PrognocisBrowser } from './integrations/prognocis-browser.mjs';
 import { AuditLogger } from './runtime/audit.mjs';
@@ -51,10 +56,14 @@ async function main() {
   await audit.init();
   let context;
   try {
+    await closeStaleLoginTargets(config.browser.cdpEndpoint, config.prognocis.loginUrl);
     context = await openBrowser(config.browser);
     const sourcePage = await portalPage(context, config.quickScribe.url);
     const destinationPage = await portalPage(context, config.prognocis.url);
-    const source = new QuickScribeBrowser(sourcePage, config.quickScribe);
+    const source = new QuickScribeBrowser(sourcePage, config.quickScribe, {
+      email: config.secrets.quickRcmEmail,
+      password: config.secrets.quickRcmPassword
+    });
     const destination = new PrognocisBrowser(
       destinationPage,
       config.prognocis,
@@ -78,7 +87,7 @@ async function main() {
 main().catch((error) => {
   process.stderr.write(`quickrcm-prognocis-writeback: ${error.message}\n`);
   if (error.code === 'AUTH_REQUIRED') {
-    process.stderr.write('Open the remote Chrome through noVNC, log in to QuickRCM and PrognoCIS, then rerun probe mode.\n');
+    process.stderr.write('Automatic portal login could not complete. Verify the four private credential env values, login selectors, and exact QuickRCM organization; use noVNC only for recovery.\n');
   }
   process.exitCode = 1;
 });

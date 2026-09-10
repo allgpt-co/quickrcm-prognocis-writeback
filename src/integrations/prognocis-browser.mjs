@@ -11,6 +11,7 @@ import {
 import {
   AuthenticationRequiredError,
   clickInFrames,
+  fillCredentialField,
   fillField,
   firstVisible,
   firstVisibleInFrames,
@@ -53,15 +54,27 @@ function diagnosisDescriptionScore(source, candidate) {
   return shared;
 }
 
-async function waitForConfiguredSave(page, { urlPattern, successSelector, timeoutMs, label }, action) {
+export async function waitForConfiguredSave(page, { urlPattern, successSelector, timeoutMs, label }, action) {
   const responsePromise = urlPattern
     ? page.waitForResponse((response) => response.request().method() === 'POST'
       && new RegExp(urlPattern, 'i').test(response.url()), { timeout: timeoutMs })
     : null;
-  await action();
-  if (responsePromise) {
-    const response = await responsePromise;
-    if (!response.ok()) throw new Error(`${label} returned HTTP ${response.status()}`);
+  const responseObserver = responsePromise?.then(
+    (response) => ({ ok: true, response, error: null }),
+    (error) => ({ ok: false, response: null, error })
+  ) ?? null;
+  try {
+    await action();
+  } catch (error) {
+    void responseObserver;
+    throw error;
+  }
+  if (responseObserver) {
+    const outcome = await responseObserver;
+    if (!outcome.ok) throw outcome.error;
+    if (!outcome.response.ok()) {
+      throw new Error(`${label} returned HTTP ${outcome.response.status()}`);
+    }
   }
   if (successSelector) await firstVisibleInFrames(page, successSelector, `${label} confirmation`, timeoutMs);
 }
@@ -234,12 +247,14 @@ export class PrognocisBrowser {
       this.selectors.loginUsername,
       'PrognoCIS username'
     );
-    await fillField(username.locator, this.credentials.username);
-    await fillField(password.locator, this.credentials.password);
+    await fillCredentialField(username.locator, this.credentials.username, 'PrognoCIS');
+    await fillCredentialField(password.locator, this.credentials.password, 'PrognoCIS');
     const popupPromise = this.page.context().waitForEvent('page', {
       timeout: this.config.popupTimeoutMs
     }).catch(() => null);
-    await clickInFrames(this.page, this.selectors.loginButton, 'PrognoCIS login');
+    await clickInFrames(this.page, this.selectors.loginButton, 'PrognoCIS login', {
+      retryOnTransient: false
+    });
     const popup = await popupPromise;
     if (popup) {
       this.page = popup;
@@ -542,7 +557,8 @@ export class PrognocisBrowser {
       await clickInFrames(
         complaintPage,
         this.selectors.hpiComplaintConfirmButton,
-        'confirm HPI complaint'
+        'confirm HPI complaint',
+        { retryOnTransient: false }
       );
     }
     if (complaintPage !== this.editorPage && !complaintPage.isClosed() && !(await closes)) {
@@ -670,7 +686,8 @@ export class PrognocisBrowser {
       }, () => clickInFrames(
         this.editorPage,
         this.selectors[`${section}SaveButton`],
-        `PrognoCIS ${section} Save`
+        `PrognoCIS ${section} Save`,
+        { retryOnTransient: false }
       ));
       this.assertNoUnexpectedDialog();
     }
@@ -774,7 +791,9 @@ export class PrognocisBrowser {
       await exact.row.click();
     }
     if (this.selectors.diagnosisConfirmButton) {
-      await clickInFrames(searchPage, this.selectors.diagnosisConfirmButton, 'confirm ICD-10-CM diagnosis');
+      await clickInFrames(searchPage, this.selectors.diagnosisConfirmButton, 'confirm ICD-10-CM diagnosis', {
+        retryOnTransient: false
+      });
     }
     if (searchPage !== this.editorPage) {
       if (!searchPage.isClosed() && !(await closes)) {
@@ -803,7 +822,9 @@ export class PrognocisBrowser {
       successSelector: this.selectors.draftSaveSuccess,
       timeoutMs: this.config.saveTimeoutMs ?? 90_000,
       label: 'PrognoCIS draft save'
-    }, () => clickInFrames(this.editorPage, this.selectors.saveDraftButton, 'PrognoCIS Save Draft'));
+    }, () => clickInFrames(this.editorPage, this.selectors.saveDraftButton, 'PrognoCIS Save Draft', {
+      retryOnTransient: false
+    }));
     const verified = this.selectors.encounterStatusCell
       ? await this.encounterStatusIs(artifact, expectedEncounterId, this.config.draftStatusPattern)
       : await this.statusSelectorMatches(this.config.draftStatusPattern, 'PrognoCIS draft status');

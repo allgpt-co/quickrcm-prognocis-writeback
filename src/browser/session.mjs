@@ -45,6 +45,40 @@ export async function resolveChromiumExecutable(config) {
   return null;
 }
 
+export async function closeStaleLoginTargets(cdpEndpoint, loginUrl) {
+  if (!cdpEndpoint || !loginUrl) return 0;
+  const endpoint = cdpEndpoint.replace(/\/$/, '');
+  const login = new URL(loginUrl);
+  const actionPath = login.pathname.replace(/\.jsp$/i, '.action2');
+  const stalePaths = new Set([login.pathname, actionPath]);
+  const listTargets = async () => {
+    const response = await fetch(`${endpoint}/json/list`);
+    if (!response.ok) throw new Error(`CDP target list returned HTTP ${response.status}`);
+    return response.json();
+  };
+  const staleTargets = (await listTargets()).filter((target) => {
+    if (target.type !== 'page' || !target.id) return false;
+    try {
+      const url = new URL(target.url);
+      return url.origin === login.origin && stalePaths.has(url.pathname);
+    } catch {
+      return false;
+    }
+  });
+  for (const target of staleTargets) {
+    const response = await fetch(`${endpoint}/json/close/${encodeURIComponent(target.id)}`);
+    if (!response.ok) throw new Error(`CDP target close returned HTTP ${response.status}`);
+  }
+  if (staleTargets.length === 0) return 0;
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    const remaining = (await listTargets()).some((target) => staleTargets.some(({ id }) => id === target.id));
+    if (!remaining) return staleTargets.length;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error('Stale PrognoCIS login targets did not close before CDP attachment');
+}
+
 export async function openBrowser(config) {
   if (config.cdpEndpoint) {
     const browser = await chromium.connectOverCDP(config.cdpEndpoint);

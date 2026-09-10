@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  credentialsFromEnvironment,
   requireWriteApproval,
   validateConfigObject,
   WRITE_ACKNOWLEDGEMENT
@@ -143,4 +144,39 @@ test('draft writes require the exact operator acknowledgement', () => {
   value.automation.writeEnabled = true;
   assert.throws(() => requireWriteApproval(value, ''), /CLINICAL_WRITE_ACK/);
   assert.doesNotThrow(() => requireWriteApproval(value, WRITE_ACKNOWLEDGEMENT));
+});
+
+test('credential loading uses the four exact operator-provided environment names', () => {
+  assert.equal(typeof credentialsFromEnvironment, 'function');
+  const credentials = credentialsFromEnvironment({
+    Quick_rcm_email: 'quick@example.test',
+    Quick_rcm_password: 'quick-secret',
+    prognosis_username: 'ehr-user',
+    prognosis_password: 'ehr-secret',
+    PROGNOCIS_USERNAME: 'must-not-be-used',
+    PROGNOCIS_PASSWORD: 'must-not-be-used'
+  });
+  assert.deepEqual(credentials, {
+    quickRcmEmail: 'quick@example.test',
+    quickRcmPassword: 'quick-secret',
+    prognocisUsername: 'ehr-user',
+    prognocisPassword: 'ehr-secret'
+  });
+});
+
+test('QuickRCM automatic login requires an exact tenant and stable login selectors', () => {
+  const value = config();
+  value.quickScribe.loginUrl = 'https://quickrcm.example.test/login';
+  value.quickScribe.organizationName = '1960pacare';
+  Object.assign(value.quickScribe.selectors, {
+    loginMarker: 'input[name="password"]',
+    loginEmail: 'input[name="email"]',
+    loginPassword: 'input[name="password"]',
+    loginSubmit: 'button[type="submit"]',
+    organizationTrigger: '#organization-trigger',
+    organizationOptions: '[role="option"]'
+  });
+  assert.doesNotThrow(() => validateConfigObject(value));
+  delete value.quickScribe.selectors.organizationOptions;
+  assert.throws(() => validateConfigObject(value), /organizationOptions/);
 });

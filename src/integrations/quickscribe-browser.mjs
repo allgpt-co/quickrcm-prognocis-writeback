@@ -1,6 +1,8 @@
 import {
   AuthenticationRequiredError,
   clickInFrames,
+  fillCredentialField,
+  fillField,
   firstVisibleInFrames,
   optionalVisibleInFrames,
   readField
@@ -132,10 +134,20 @@ function diagnosesFromPersistedReview(codingJob) {
   });
 }
 
+export async function runWithObservedNavigation(navigationPromise, action) {
+  const observed = Promise.resolve(navigationPromise).then(
+    () => ({ ok: true, error: null }),
+    (error) => ({ ok: false, error })
+  );
+  await action();
+  return observed;
+}
+
 export class QuickScribeBrowser {
-  constructor(page, config) {
+  constructor(page, config, credentials = {}) {
     this.page = page;
     this.config = config;
+    this.credentials = credentials;
     this.selectors = config.selectors;
     this.targets = new Map();
   }
@@ -190,27 +202,142 @@ export class QuickScribeBrowser {
     return { jobId, url: targetUrl.href, ...metadata };
   }
 
-  async assertAuthenticated() {
-    if (this.selectors.loginMarker
-      && await optionalVisibleInFrames(this.page, this.selectors.loginMarker)) {
-      throw new AuthenticationRequiredError('QuickRCM/QuickScribe');
+  async waitForAuthenticationState() {
+    const deadline = Date.now() + (this.config.loginTimeoutMs ?? 45_000);
+    do {
+      if (this.selectors.loginMarker
+        && await optionalVisibleInFrames(this.page, this.selectors.loginMarker)) {
+        return 'login';
+      }
+      if (await optionalVisibleInFrames(this.page, this.selectors.authenticatedMarker)) {
+        return 'authenticated';
+      }
+      await this.page.waitForTimeout(100);
+    } while (Date.now() < deadline);
+    throw new AuthenticationRequiredError('QuickRCM/QuickScribe');
+  }
+
+  async loginIfRequired() {
+    if (await this.waitForAuthenticationState() === 'authenticated') return false;
+    if (!this.credentials.email || !this.credentials.password) {
+      const error = new AuthenticationRequiredError('QuickRCM/QuickScribe');
+      error.message = 'Quick_rcm_email and Quick_rcm_password are required for automatic QuickRCM login';
+      throw error;
     }
+    await this.page.goto(this.config.loginUrl, { waitUntil: 'domcontentloaded' });
+    const email = await firstVisibleInFrames(
+      this.page,
+      this.selectors.loginEmail,
+      'QuickRCM login email',
+      this.config.loginTimeoutMs ?? 45_000
+    );
+    const password = await firstVisibleInFrames(
+      this.page,
+      this.selectors.loginPassword,
+      'QuickRCM login password',
+      this.config.loginTimeoutMs ?? 45_000
+    );
+    await fillCredentialField(email.locator, this.credentials.email, 'QuickRCM');
+    await fillCredentialField(password.locator, this.credentials.password, 'QuickRCM');
+    const loginPath = new URL(this.config.loginUrl).pathname;
+    const navigation = this.page.waitForURL(
+      (url) => url.origin === new URL(this.config.url).origin && url.pathname !== loginPath,
+      { waitUntil: 'domcontentloaded', timeout: this.config.loginTimeoutMs ?? 45_000 }
+    );
+    const result = await runWithObservedNavigation(navigation, () => clickInFrames(
+      this.page,
+      this.selectors.loginSubmit,
+      'QuickRCM login submit',
+      { retryOnTransient: false }
+    ));
+    if (!result.ok) {
+      const error = new AuthenticationRequiredError('QuickRCM/QuickScribe');
+      error.message = 'QuickRCM automatic login did not reach an authenticated route';
+      throw error;
+    }
+    return true;
+  }
+
+  async ensureOrganization() {
+    if (!this.config.organizationName) return;
+    const trigger = await firstVisibleInFrames(
+      this.page,
+      this.selectors.organizationTrigger,
+      'QuickRCM organization selector',
+      this.config.loginTimeoutMs ?? 45_000
+    );
+    const expected = normalize(this.config.organizationName);
+    if (normalize(await readField(trigger.locator)) === expected) return;
+    await trigger.locator.click();
+    const optionsResult = await firstVisibleInFrames(
+      this.page,
+      this.selectors.organizationOptions,
+      'QuickRCM organization options',
+      this.config.loginTimeoutMs ?? 45_000
+    );
+    const options = optionsResult.scope.locator(this.selectors.organizationOptions);
+    const matches = [];
+    for (let index = 0; index < await options.count(); index += 1) {
+      const option = options.nth(index);
+      if (!(await option.isVisible().catch(() => false))) continue;
+      if (normalize(await option.innerText().catch(() => '')) === expected) matches.push(option);
+    }
+    if (matches.length !== 1) {
+      throw new Error(`QuickRCM returned ${matches.length} exact organization matches; expected one`);
+    }
+    const navigation = this.page.waitForNavigation({
+      waitUntil: 'domcontentloaded',
+      timeout: this.config.loginTimeoutMs ?? 45_000
+    }).catch(() => null);
+    await matches[0].click();
+    await navigation;
+    const verified = await firstVisibleInFrames(
+      this.page,
+      this.selectors.organizationTrigger,
+      'selected QuickRCM organization',
+      this.config.loginTimeoutMs ?? 45_000
+    );
+    if (normalize(await readField(verified.locator)) !== expected) {
+      throw new Error('QuickRCM did not retain the exact configured organization');
+    }
+  }
+
+  async assertAuthenticated(returnUrl = null) {
+    await this.loginIfRequired();
     try {
       await firstVisibleInFrames(
         this.page,
         this.selectors.authenticatedMarker,
-        'authenticated QuickRCM/QuickScribe page'
+        'authenticated QuickRCM/QuickScribe page',
+        this.config.loginTimeoutMs ?? 45_000
       );
     } catch {
       const error = new AuthenticationRequiredError('QuickRCM/QuickScribe');
       error.message = 'QuickRCM/QuickScribe is not authenticated in the persistent remote browser';
       throw error;
     }
+    await this.ensureOrganization();
+    if (!returnUrl || this.page.url() === returnUrl) return;
+    const requested = new URL(returnUrl, this.config.url);
+    if (requested.origin !== new URL(this.config.url).origin) {
+      throw new Error('QuickRCM authenticated return URL changed to an unexpected origin');
+    }
+    await this.page.goto(requested.href, { waitUntil: 'domcontentloaded' });
+    if (this.selectors.loginMarker
+      && await optionalVisibleInFrames(this.page, this.selectors.loginMarker)) {
+      throw new AuthenticationRequiredError('QuickRCM/QuickScribe');
+    }
+    await firstVisibleInFrames(
+      this.page,
+      this.selectors.authenticatedMarker,
+      'authenticated QuickRCM/QuickScribe return page',
+      this.config.loginTimeoutMs ?? 45_000
+    );
   }
 
   async listAttestedTargets(limit) {
     await this.page.goto(this.config.attestedNotesUrl, { waitUntil: 'domcontentloaded' });
-    await this.assertAuthenticated();
+    await this.assertAuthenticated(this.config.attestedNotesUrl);
     let result = await firstVisibleInFrames(this.page, this.selectors.noteRows, 'QuickScribe note rows');
     let rows = result.scope.locator(this.selectors.noteRows);
     const rowCount = await rows.count();
@@ -218,7 +345,7 @@ export class QuickScribeBrowser {
     for (let index = 0; index < rowCount && targets.length < limit; index += 1) {
       if (this.page.url() !== this.config.attestedNotesUrl) {
         await this.page.goto(this.config.attestedNotesUrl, { waitUntil: 'domcontentloaded' });
-        await this.assertAuthenticated();
+        await this.assertAuthenticated(this.config.attestedNotesUrl);
         result = await firstVisibleInFrames(this.page, this.selectors.noteRows, 'QuickScribe note rows');
         rows = result.scope.locator(this.selectors.noteRows);
         if (await rows.count() !== rowCount) {
@@ -391,7 +518,7 @@ export class QuickScribeBrowser {
   async readJoinedPatient(target) {
     const names = namesFromFullName(target.patientName, this.config.patientNamePattern);
     await this.page.goto(this.config.patientDirectoryUrl, { waitUntil: 'domcontentloaded' });
-    await this.assertAuthenticated();
+    await this.assertAuthenticated(this.config.patientDirectoryUrl);
     const search = await firstVisibleInFrames(
       this.page,
       this.selectors.patientSearchInput,
@@ -427,7 +554,7 @@ export class QuickScribeBrowser {
 
   async readJoinedAppointment(target) {
     await this.page.goto(this.config.appointmentDirectoryUrl, { waitUntil: 'domcontentloaded' });
-    await this.assertAuthenticated();
+    await this.assertAuthenticated(this.config.appointmentDirectoryUrl);
     if (this.selectors.appointmentAllTab) {
       await clickInFrames(
         this.page,
@@ -517,7 +644,7 @@ export class QuickScribeBrowser {
 
   async extractTarget(target) {
     await this.page.goto(target.url, { waitUntil: 'domcontentloaded' });
-    await this.assertAuthenticated();
+    await this.assertAuthenticated(target.url);
     const root = await firstVisibleInFrames(
       this.page,
       this.selectors.noteDetailRoot,
@@ -547,7 +674,7 @@ export class QuickScribeBrowser {
       patient = await this.readJoinedPatient(target);
       encounter = await this.readJoinedAppointment(target);
       await this.page.goto(target.url, { waitUntil: 'domcontentloaded' });
-      await this.assertAuthenticated();
+      await this.assertAuthenticated(target.url);
     } else {
       const serviceDateText = await exactText(this.page, this.selectors.serviceDate, 'encounter service date');
       patient = {

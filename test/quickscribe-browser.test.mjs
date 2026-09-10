@@ -325,3 +325,131 @@ test('Playwright rejects a persisted coding job linked to another Scribe job', a
     await browser.close();
   }
 });
+
+test('Playwright logs into QuickRCM and selects the exact configured organization only when required', async () => {
+  const executablePath = await resolveChromiumExecutable({ projectRoot: process.cwd(), executablePath: '' });
+  assert.ok(executablePath, 'A Chromium executable is required for the browser fixture');
+  const browser = await chromium.launch({ headless: true, executablePath });
+  try {
+    const page = await browser.newPage();
+    await page.route('https://quickrcm.example.test/**', async (route) => {
+      const requestUrl = new URL(route.request().url());
+      const authenticated = (await route.request().allHeaders()).cookie?.includes('auth=yes');
+      if ((requestUrl.pathname === '/attested' && !authenticated)
+        || requestUrl.pathname === '/login') {
+        await route.fulfill({ contentType: 'text/html', body: `
+          <form id="login-form" hidden>
+            <input type="email" name="email"><input type="password" name="password">
+            <button type="submit">Log in</button>
+          </form>
+          <script>
+            setTimeout(() => {
+              const form = document.querySelector('#login-form');
+              form.hidden = false;
+              form.addEventListener('submit', (event) => {
+                event.preventDefault();
+                if (event.target.email.value === 'quick@example.test'
+                  && event.target.password.value === 'quick-secret') {
+                  document.cookie = 'auth=yes; Path=/';
+                  location.href = '/dashboard';
+                }
+              });
+            }, 150);
+          </script>
+        ` });
+        return;
+      }
+      if (requestUrl.pathname === '/dashboard') {
+        await route.fulfill({ contentType: 'text/html', body: `
+          <main id="app">
+            <button id="organization-trigger" role="combobox"><span id="current-org"></span></button>
+            <div id="organization-options" hidden>
+              <button role="option" data-value="org-other">Other Organization</button>
+              <button role="option" data-value="org-1960">1960pacare</button>
+            </div>
+          </main>
+          <script>
+            const current = document.querySelector('#current-org');
+            current.textContent = localStorage.getItem('currentOrgId') === 'org-1960'
+              ? '1960pacare' : 'Other Organization';
+            document.querySelector('#organization-trigger').onclick = () => {
+              document.querySelector('#organization-options').hidden = false;
+            };
+            for (const option of document.querySelectorAll('[role="option"]')) {
+              option.onclick = () => {
+                localStorage.setItem('currentOrgId', option.dataset.value);
+                location.reload();
+              };
+            }
+          </script>
+        ` });
+        return;
+      }
+      if (requestUrl.pathname === '/attested') {
+        await route.fulfill({ contentType: 'text/html', body: `
+          <main id="app"><div class="note-row" data-job-id="job-login">
+            <span class="status">ATTESTED</span><a class="open" href="/jobs/job-login">Open</a>
+          </div></main>
+        ` });
+        return;
+      }
+      await route.fulfill({ status: 404, body: 'not found' });
+    });
+    const loginConfig = {
+      url: 'https://quickrcm.example.test',
+      loginUrl: 'https://quickrcm.example.test/login',
+      attestedNotesUrl: 'https://quickrcm.example.test/attested',
+      organizationName: '1960pacare',
+      selectors: {
+        authenticatedMarker: '#app',
+        loginMarker: 'input[name="password"]',
+        loginEmail: 'input[name="email"]',
+        loginPassword: 'input[name="password"]',
+        loginSubmit: 'button[type="submit"]',
+        organizationTrigger: '#organization-trigger',
+        organizationOptions: '#organization-options [role="option"]',
+        noteRows: '.note-row',
+        noteStatus: '.status',
+        noteOpenLink: 'a.open',
+        noteIdAttribute: 'data-job-id'
+      }
+    };
+    const source = new QuickScribeBrowser(page, loginConfig, {
+      email: 'quick@example.test', password: 'quick-secret'
+    });
+    const targets = await source.listAttestedTargets(1);
+    assert.equal(targets.length, 1);
+    assert.equal(targets[0].jobId, 'job-login');
+    assert.equal(await page.evaluate(() => localStorage.getItem('currentOrgId')), 'org-1960');
+  } finally {
+    await browser.close();
+  }
+});
+
+test('QuickRCM automatic login fails closed when the exact credential env values are absent', async () => {
+  const executablePath = await resolveChromiumExecutable({ projectRoot: process.cwd(), executablePath: '' });
+  assert.ok(executablePath, 'A Chromium executable is required for the browser fixture');
+  const browser = await chromium.launch({ headless: true, executablePath });
+  try {
+    const page = await browser.newPage();
+    await page.setContent('<input type="password" name="password">');
+    const source = new QuickScribeBrowser(page, {
+      url: 'https://quickrcm.example.test',
+      loginUrl: 'https://quickrcm.example.test/login',
+      attestedNotesUrl: 'https://quickrcm.example.test/attested',
+      organizationName: '1960pacare',
+      selectors: {
+        loginMarker: 'input[name="password"]',
+        loginEmail: 'input[name="email"]',
+        loginPassword: 'input[name="password"]',
+        loginSubmit: 'button[type="submit"]',
+        authenticatedMarker: '#app',
+        organizationTrigger: '#organization-trigger',
+        organizationOptions: '[role="option"]'
+      }
+    }, {});
+    await assert.rejects(() => source.assertAuthenticated(), /Quick_rcm_email.*Quick_rcm_password/);
+  } finally {
+    await browser.close();
+  }
+});

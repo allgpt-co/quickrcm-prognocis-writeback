@@ -109,17 +109,21 @@ Run the reverse job as the same OS user that owns the Hermes home, browser profi
    chmod 700 .runtime
    ```
 
-4. In `.env`, set the fixed authorization acknowledgement:
+4. In `.env`, store the four portal credentials under these exact names, plus the fixed write acknowledgement:
 
    ```dotenv
+   Quick_rcm_email=
+   Quick_rcm_password=
+   prognosis_username=
+   prognosis_password=
    CLINICAL_WRITE_ACK=I_ACKNOWLEDGE_ATTESTED_CLINICAL_DRAFT_WRITES
    ```
 
-   If `prognocis.loginPerRun` is changed to `true`, also store the authorized `PROGNOCIS_USERNAME` and `PROGNOCIS_PASSWORD` there. Never place credentials in the cron command, Git, logs, screenshots, or this guide.
+   The browser uses these values only when the corresponding login form is visible. It verifies the configured QuickRCM organization after login and fails closed if the organization is missing or ambiguous. Never place credential values in the cron command, Git, logs, screenshots, or this guide.
 
-5. Confirm the shared headed Chrome is running and CDP `127.0.0.1:9223` is reachable. QuickRCM and PrognoCIS must be authenticated in that same profile. Keep CDP, VNC, and noVNC bound to localhost.
+5. Confirm the shared headed Chrome is running and CDP `127.0.0.1:9223` is reachable. QuickRCM and PrognoCIS run in the same reverse-flow profile. Keep CDP, VNC, and noVNC bound to localhost.
 
-6. PrognoCIS permits only one application instance in a browser profile. Close stale PrognoCIS login/close-window tabs before enabling the schedule.
+6. Set `prognocis.loginPerRun` to `true`. Before CDP attachment, the runner closes only stale PrognoCIS login/login-action targets on the configured origin; it preserves the active patient application and all unrelated origins.
 
 7. Set a long Hermes script timeout because browser saves and read-back verification can exceed the default:
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { randomUUID } from 'node:crypto';
 import { portalPage, openBrowser, closeBrowser } from './browser/session.mjs';
-import { QuickScribeBrowser } from './integrations/quickscribe-browser.mjs';
+import { Care1960ApiSource } from './integrations/care1960-api.mjs';
 import { PrognocisBrowser } from './integrations/prognocis-browser.mjs';
 import { AuditLogger } from './runtime/audit.mjs';
 import { loadConfig } from './runtime/config.mjs';
@@ -14,10 +14,12 @@ function parseArgs(argv) {
   for (let index = 1; index < argv.length; index += 1) {
     const token = argv[index];
     if (token === '--config') args.config = argv[++index];
+    else if (token === '--response') args.responseFile = argv[++index];
     else if (token === '--max-records') args.maxRecords = Number(argv[++index]);
     else throw new Error(`Unknown argument: ${token}`);
+    if (!argv[index] || argv[index].startsWith('--')) throw new Error(`Missing value for ${token}`);
   }
-  if (!['probe', 'run', 'validate-config'].includes(args.command)) {
+  if (!['probe', 'run', 'validate-config', 'validate-response'].includes(args.command)) {
     throw new Error(`Unknown command: ${args.command}`);
   }
   if (args.maxRecords !== undefined
@@ -30,12 +32,25 @@ function parseArgs(argv) {
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.command === 'validate-config') {
-    await loadConfig(args.config, { requireSecrets: false });
+    await loadConfig(args.config, { requireSecrets: false, responseFile: args.responseFile });
     process.stdout.write('Configuration is structurally valid.\n');
     return;
   }
 
-  const config = await loadConfig(args.config, { forceProbe: args.command === 'probe' });
+  const config = await loadConfig(args.config, {
+    forceProbe: args.command !== 'run',
+    responseFile: args.responseFile,
+    sourceOnly: args.command === 'validate-response'
+  });
+  const source = new Care1960ApiSource(config.care1960, {
+    apiKey: config.secrets.care1960ApiKey,
+    bearerToken: config.secrets.care1960BearerToken
+  });
+  if (args.command === 'validate-response') {
+    const records = await source.listAttestedArtifacts(args.maxRecords ?? 100);
+    process.stdout.write(`${JSON.stringify({ mode: 'validate-response', validated: records.length, ehrWrites: 0 })}\n`);
+    return;
+  }
   if (args.command === 'run' && !config.automation.writeEnabled) {
     throw new Error('Set automation.writeEnabled=true only after the supervised canary; use npm run probe before then');
   }
@@ -48,13 +63,13 @@ async function main() {
 
   const releaseLock = await acquireRunLock(config.runtime.lockFile);
   const audit = new AuditLogger(config.runtime.auditFile, randomUUID());
-  await audit.init();
   let context;
   try {
+    await audit.init();
+    // Reject invalid API responses before opening or interacting with the EHR.
+    await source.load();
     context = await openBrowser(config.browser);
-    const sourcePage = await portalPage(context, config.quickScribe.url);
     const destinationPage = await portalPage(context, config.prognocis.url);
-    const source = new QuickScribeBrowser(sourcePage, config.quickScribe);
     const destination = new PrognocisBrowser(
       destinationPage,
       config.prognocis,
@@ -76,9 +91,9 @@ async function main() {
 }
 
 main().catch((error) => {
-  process.stderr.write(`quickrcm-prognocis-writeback: ${error.message}\n`);
+  process.stderr.write(`care1960-prognocis-writeback: ${error.message}\n`);
   if (error.code === 'AUTH_REQUIRED') {
-    process.stderr.write('Open the remote Chrome through noVNC, log in to QuickRCM and PrognoCIS, then rerun probe mode.\n');
+    process.stderr.write('Open the remote Chrome through noVNC, log in to PrognoCIS, then rerun probe mode.\n');
   }
   process.exitCode = 1;
 });

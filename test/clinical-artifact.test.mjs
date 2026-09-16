@@ -2,7 +2,6 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   clinicalArtifactHash,
-  textContainsExactCode,
   validateClinicalArtifact
 } from '../src/domain/clinical-artifact.mjs';
 import { artifact } from '../test-support/artifact.mjs';
@@ -11,7 +10,7 @@ test('accepts only the strict provider-attested clinical artifact', () => {
   const validated = validateClinicalArtifact(artifact());
   assert.equal(validated.status, 'ATTESTED');
   assert.deepEqual(Object.keys(validated.sections), ['hpi', 'ros', 'physicalExamination']);
-  assert.deepEqual(validated.diagnoses.map(({ code }) => code), ['R05.9']);
+  assert.deepEqual(validated.diagnoses, []);
 });
 
 test('rejects an unapproved note even when its hash is internally consistent', () => {
@@ -24,20 +23,11 @@ test('rejects raw transcript or audio data at the consumer boundary', () => {
   assert.throws(() => validateClinicalArtifact(value), /unsupported field: rawTranscript/i);
 });
 
-test('rejects CPT, HCPCS, and non-accepted code suggestions', () => {
-  const cptBase = artifact();
-  cptBase.diagnoses = [{
-    ...cptBase.diagnoses[0],
-    system: 'CPT',
-    code: '99213'
-  }];
-  cptBase.artifactHash = clinicalArtifactHash(cptBase);
-  assert.throws(() => validateClinicalArtifact(cptBase), /must use ICD10CM/i);
-
-  const suggested = artifact();
-  suggested.diagnoses[0].reviewStatus = 'SUGGESTED';
-  suggested.artifactHash = clinicalArtifactHash(suggested);
-  assert.throws(() => validateClinicalArtifact(suggested), /not explicitly accepted/i);
+test('rejects diagnosis codes and retired source artifacts', () => {
+  const value = artifact({ diagnoses: [{ system: 'ICD10CM', code: 'R05.9' }] });
+  assert.throws(() => validateClinicalArtifact(value), /diagnoses must be empty/);
+  assert.throws(() => validateClinicalArtifact(artifact({ version: 2 })), /Unsupported/);
+  assert.throws(() => validateClinicalArtifact(artifact({ source: 'retired-browser-source' })), /Unsupported/);
 });
 
 test('rejects any content changed after the producer generated its hash', () => {
@@ -57,16 +47,9 @@ test('rejects a directly supplied clinical section containing only placeholders'
   assert.throws(() => validateClinicalArtifact(value), /sections\.ros.*placeholder-only/i);
 });
 
-test('canonical hash treats omitted optional EHR identifiers as null', () => {
+test('canonical hash treats an omitted optional provider as null', () => {
   const value = artifact();
-  delete value.patient.prognocisPatientId;
   delete value.encounter.providerName;
-  delete value.encounter.prognocisEncounterId;
   value.artifactHash = clinicalArtifactHash(value);
   assert.doesNotThrow(() => validateClinicalArtifact(value));
-});
-
-test('ICD-10 read-back uses token boundaries', () => {
-  assert.equal(textContainsExactCode('Diagnosis R05.9 Cough', 'R05.9'), true);
-  assert.equal(textContainsExactCode('Diagnosis R05.91 Other cough', 'R05.9'), false);
 });

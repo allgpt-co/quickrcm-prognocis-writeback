@@ -14,7 +14,7 @@ if [[ "${1:-}" == "--dry-run" ]]; then
 fi
 schedule="${1:-15 0-20,23 * * *}"
 delivery="${2:-local}"
-job_name="quickrcm-prognocis-clinical-drafts"
+job_name="care1960-prognocis-clinical-drafts"
 
 node_bin="$(command -v node || true)"
 if [[ -z "$node_bin" ]]; then
@@ -33,7 +33,7 @@ fi
 
 hermes_base="${HERMES_HOME:-${HOME}/.hermes}"
 scripts_dir="$hermes_base/scripts"
-wrapper="$scripts_dir/quickrcm-prognocis-clinical-drafts.sh"
+wrapper="$scripts_dir/care1960-prognocis-clinical-drafts.sh"
 if [[ "$dry_run" == true ]]; then
   echo "Hermes command: ${hermes_command[*]}"
   echo "Wrapper target: $wrapper"
@@ -60,7 +60,7 @@ chmod 700 -- "$wrapper"
 
 if "${hermes_command[@]}" cron edit "$job_name" \
   --schedule "$schedule" \
-  --script "quickrcm-prognocis-clinical-drafts.sh" \
+  --script "care1960-prognocis-clinical-drafts.sh" \
   --deliver "$delivery" \
   --workdir "$project_root" \
   --no-agent >/dev/null 2>&1; then
@@ -68,10 +68,10 @@ if "${hermes_command[@]}" cron edit "$job_name" \
 else
   "${hermes_command[@]}" cron create "$schedule" \
     --no-agent \
-    --script "quickrcm-prognocis-clinical-drafts.sh" \
+    --script "care1960-prognocis-clinical-drafts.sh" \
     --deliver "$delivery" \
     --workdir "$project_root" \
     --name "$job_name"
 fi
 "${hermes_command[@]}" cron status
-echo "Installed draft-only QuickRCM-to-PrognoCIS polling. This job never signs or closes encounters."
+echo "Installed draft-only Care1960 API-to-PrognoCIS delivery. This job never signs or closes encounters."

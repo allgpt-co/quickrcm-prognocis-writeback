@@ -1,6 +1,5 @@
 import {
   normalizeClinicalText,
-  textContainsExactCode,
   validateClinicalArtifact
 } from '../domain/clinical-artifact.mjs';
 import {
@@ -16,8 +15,7 @@ import {
   firstVisibleInFrames,
   optionalVisibleInFrames,
   pageScopes,
-  readField,
-  visibleTextsInFrames
+  readField
 } from '../browser/locators.mjs';
 
 const SECTION_NAMES = ['hpi', 'ros', 'physicalExamination'];
@@ -31,26 +29,6 @@ function stableEncounterId(rawValue, configuredPattern) {
   if (!raw) return '';
   if (!configuredPattern) return raw;
   return String(raw.match(new RegExp(configuredPattern))?.[1] ?? '').trim();
-}
-
-function descriptionTokens(value) {
-  return new Set(String(value ?? '')
-    .normalize('NFKC')
-    .toLowerCase()
-    .match(/[a-z0-9]+/g)
-    ?.filter((token) => token.length >= 3 && !['and', 'the', 'with', 'unspecified'].includes(token)) ?? []);
-}
-
-function diagnosisDescriptionScore(source, candidate) {
-  const expected = normalize(source);
-  const actual = normalize(candidate);
-  if (!expected || !actual) return 0;
-  if (expected === actual) return 10_000;
-  const expectedTokens = descriptionTokens(expected);
-  const actualTokens = descriptionTokens(actual);
-  let shared = 0;
-  for (const token of expectedTokens) if (actualTokens.has(token)) shared += 1;
-  return shared;
 }
 
 async function waitForConfiguredSave(page, { urlPattern, successSelector, timeoutMs, label }, action) {
@@ -79,6 +57,20 @@ async function firstEditableInFrames(page, selector, label, timeoutMs = 10_000) 
     await page.waitForTimeout(100);
   } while (Date.now() < deadline);
   throw new Error(`Editable element not found in any frame for ${label}`);
+}
+
+async function contextPageWithVisibleSelector(page, selector, label, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  do {
+    const candidates = [...page.context().pages()].reverse();
+    for (const candidate of candidates) {
+      if (candidate.isClosed()) continue;
+      const found = await optionalVisibleInFrames(candidate, selector).catch(() => null);
+      if (found) return candidate;
+    }
+    await page.waitForTimeout(100);
+  } while (Date.now() < deadline);
+  throw new Error(`Visible element not found in any browser page for ${label}`);
 }
 
 async function firstVisibleInSectionFrame(
@@ -247,16 +239,18 @@ export class PrognocisBrowser {
   }
 
   async openPatientSearch() {
-    const popupPromise = this.page.context().waitForEvent('page', {
-      timeout: this.config.popupTimeoutMs
-    }).catch(() => null);
     await clickInFrames(this.page, this.selectors.selectPatient, 'PrognoCIS Select Patient');
-    let searchPage = await popupPromise;
-    if (!searchPage && this.config.patientSearchUrlPattern) {
-      const pattern = new RegExp(this.config.patientSearchUrlPattern, 'i');
-      searchPage = this.page.context().pages().find((candidate) => pattern.test(candidate.url()));
+    const searchPage = await contextPageWithVisibleSelector(
+      this.page,
+      this.selectors.patientFirstName,
+      'PrognoCIS patient search',
+      this.config.popupTimeoutMs
+    );
+    if (this.config.patientSearchUrlPattern
+      && searchPage !== this.page
+      && !new RegExp(this.config.patientSearchUrlPattern, 'i').test(searchPage.url())) {
+      throw new Error('PrognoCIS patient search opened an unexpected URL');
     }
-    searchPage ??= this.page;
     this.watchDialogs(searchPage);
     await searchPage.waitForLoadState('domcontentloaded');
     return searchPage;
@@ -467,15 +461,17 @@ export class PrognocisBrowser {
     if (!complaintName) {
       throw new Error('No exact HPI complaint mapping exists for this appointment type');
     }
-    const popupPromise = this.editorPage.context().waitForEvent('page', {
-      timeout: this.config.popupTimeoutMs
-    }).catch(() => null);
     await clickInFrames(
       this.editorPage,
       this.selectors.hpiComplaintLookupButton,
       'HPI complaint lookup'
     );
-    const complaintPage = await popupPromise ?? this.editorPage;
+    const complaintPage = await contextPageWithVisibleSelector(
+      this.editorPage,
+      this.selectors.hpiComplaintSearchInput,
+      'HPI complaint search',
+      this.config.popupTimeoutMs
+    );
     this.watchDialogs(complaintPage);
     const search = await firstVisibleInFrames(
       complaintPage,
@@ -579,45 +575,16 @@ export class PrognocisBrowser {
     return values;
   }
 
-  async readDiagnoses() {
-    await this.dismissTransientOverlay();
-    let add = await optionalVisibleInFrames(this.editorPage, this.selectors.diagnosisAddButton);
-    if (!add) {
-      await clickInFrames(
-        this.editorPage,
-        this.selectors.diagnosisMenu,
-        'PrognoCIS diagnoses',
-        { allowHiddenLegacy: true }
-      );
-      // The legacy main clinical frame is replaced asynchronously. Waiting for
-      // Assessment's Add control prevents a following diagnosis write from
-      // re-clicking the menu while that replacement is still in flight.
-      add = await firstVisibleInFrames(
-        this.editorPage,
-        this.selectors.diagnosisAddButton,
-        'PrognoCIS diagnosis section'
-      );
-    }
-    return visibleTextsInFrames(this.editorPage, this.selectors.existingDiagnosisRows);
-  }
-
   async inspectDraft(artifact, options = {}) {
     const sections = await this.readSections(artifact, options);
-    const diagnosisRows = await this.readDiagnoses();
     const sectionState = Object.fromEntries(SECTION_NAMES.map((section) => {
       const actual = normalizeClinicalText(sections[section]);
       const expected = normalizeClinicalText(artifact.sections[section]);
       return [section, { empty: !actual, matches: actual === expected }];
     }));
-    const diagnosisState = artifact.diagnoses.map((diagnosis) => ({
-      diagnosis,
-      present: diagnosisRows.some((row) => textContainsExactCode(row, diagnosis.code))
-    }));
     return {
       sections: sectionState,
-      diagnoses: diagnosisState,
       exact: Object.values(sectionState).every(({ matches }) => matches)
-        && diagnosisState.every(({ present }) => present)
     };
   }
 
@@ -635,7 +602,7 @@ export class PrognocisBrowser {
     for (const section of SECTION_NAMES) {
       if (state.sections[section].matches) continue;
       const field = await this.sectionField(section, artifact.encounter.appointmentType, {
-        allowTemplate: true
+        allowTemplate: false
       });
       if (!(await field.isEditable().catch(() => false))) {
         throw new Error(`PrognoCIS ${section} narrative field is not editable`);
@@ -656,112 +623,6 @@ export class PrognocisBrowser {
       ));
       this.assertNoUnexpectedDialog();
     }
-  }
-
-  async addDiagnosis(diagnosis) {
-    await this.dismissTransientOverlay();
-    // inspectDraft() normally leaves the encounter on Assessment. Avoid clicking
-    // its menu again when the Add control is already available: the legacy app
-    // replaces its clinical frame on every menu click, so immediately evaluating
-    // in the old frame can destroy the execution context while a popup opens.
-    let add = await optionalVisibleInFrames(this.editorPage, this.selectors.diagnosisAddButton);
-    if (!add) {
-      await clickInFrames(
-        this.editorPage,
-        this.selectors.diagnosisMenu,
-        'PrognoCIS diagnoses',
-        { allowHiddenLegacy: true }
-      );
-      add = await firstVisibleInFrames(
-        this.editorPage,
-        this.selectors.diagnosisAddButton,
-        'add ICD-10-CM diagnosis'
-      );
-    }
-    const popupPromise = this.editorPage.context().waitForEvent('page', {
-      timeout: this.config.popupTimeoutMs
-    }).catch(() => null);
-    if (this.config.diagnosisSearchPath) {
-      await add.scope.evaluate((path) => {
-        window.open(
-          path,
-          `prognoListSearch_${Date.now()}`,
-          'width=990,height=600,resizable=no,maximize=no,scrollbars=yes,left=10,top=15'
-        );
-      }, this.config.diagnosisSearchPath);
-    } else {
-      await add.locator.click();
-    }
-    const searchPage = await popupPromise ?? this.editorPage;
-    this.watchDialogs(searchPage);
-    const search = await firstVisibleInFrames(
-      searchPage,
-      this.selectors.diagnosisSearchInput,
-      'ICD-10-CM diagnosis search'
-    );
-    await fillField(search.locator, diagnosis.code);
-    if (this.selectors.diagnosisSearchButton) {
-      await clickInFrames(searchPage, this.selectors.diagnosisSearchButton, 'ICD-10-CM search action');
-    } else {
-      await search.locator.press('Enter');
-    }
-    const closes = searchPage !== this.editorPage
-      ? searchPage.waitForEvent('close', { timeout: this.config.popupTimeoutMs }).catch(() => null)
-      : null;
-    let matches = [];
-    const resultDeadline = Date.now() + (this.config.diagnosisSearchTimeoutMs ?? 10_000);
-    do {
-      matches = [];
-      for (const scope of pageScopes(searchPage)) {
-        const rows = scope.locator(this.selectors.diagnosisResultRows);
-        const count = await rows.count().catch(() => 0);
-        for (let index = 0; index < count; index += 1) {
-          const row = rows.nth(index);
-          if (!(await row.isVisible().catch(() => false))) continue;
-          const candidateCode = this.selectors.diagnosisResultCodeCell
-            ? await row.locator(this.selectors.diagnosisResultCodeCell).first().innerText().catch(() => '')
-            : await row.innerText().catch(() => '');
-          if (!textContainsExactCode(candidateCode, diagnosis.code)) continue;
-          const description = this.selectors.diagnosisResultDescriptionCell
-            ? await row.locator(this.selectors.diagnosisResultDescriptionCell).first().innerText().catch(() => '')
-            : '';
-          matches.push({ row, description });
-        }
-      }
-      if (matches.length > 0) break;
-      await searchPage.waitForTimeout(100);
-    } while (Date.now() < resultDeadline);
-    let exact;
-    if (matches.length === 1) {
-      [exact] = matches;
-    } else if (matches.length > 1 && diagnosis.description && this.selectors.diagnosisResultDescriptionCell) {
-      const ranked = matches
-        .map((candidate) => ({
-          ...candidate,
-          score: diagnosisDescriptionScore(diagnosis.description, candidate.description)
-        }))
-        .sort((left, right) => right.score - left.score);
-      if (ranked[0].score <= 0 || ranked[0].score === ranked[1].score) {
-        requireOneMatch(matches, 'ICD-10-CM code and description');
-      }
-      [exact] = ranked;
-    } else {
-      exact = requireOneMatch(matches, 'ICD-10-CM code');
-    }
-    if (this.selectors.diagnosisSelectButton) {
-      await exact.row.locator(this.selectors.diagnosisSelectButton).first().click();
-    } else {
-      await exact.row.click();
-    }
-    if (this.selectors.diagnosisConfirmButton) {
-      await clickInFrames(searchPage, this.selectors.diagnosisConfirmButton, 'confirm ICD-10-CM diagnosis');
-    }
-    if (searchPage !== this.editorPage) {
-      if (!searchPage.isClosed() && !(await closes)) {
-        throw new Error('PrognoCIS diagnosis search did not close after exact selection');
-      }
-    }
-    this.assertNoUnexpectedDialog();
   }
 
   async encounterStatusIs(artifact, expectedEncounterId, configuredPattern) {
@@ -872,15 +733,12 @@ export class PrognocisBrowser {
     }
     this.assertNoDifferentClinicalText(before);
     await this.writeMissingSections(artifact, before);
-    for (const item of before.diagnoses) {
-      if (!item.present) await this.addDiagnosis(item.diagnosis);
-    }
     await this.saveDraftAndVerifyStatus(artifact, ehrEncounterId);
 
     await this.reopenExactEncounter(artifact, ehrEncounterId);
     const after = await this.inspectDraft(artifact);
     if (!after.exact || !(await this.verifyDraftStatus(artifact, ehrEncounterId))) {
-      const error = new Error('Reopened PrognoCIS draft did not match every approved section and ICD-10-CM code');
+      const error = new Error('Reopened PrognoCIS draft did not match the approved clinical artifact');
       error.code = 'DRAFT_READBACK_FAILED';
       throw error;
     }

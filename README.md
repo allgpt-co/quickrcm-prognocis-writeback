@@ -1,133 +1,125 @@
-# QuickScribe to PrognoCIS Browser Write-Back
+# Care1960 API to PrognoCIS writeback
 
-This repository implements the reverse clinical-documentation workflow entirely through the rendered web interfaces. It does not read a QuickRCM API response and does not require a QuickRCM API key.
+The input is the JSON output of the Care1960 API. Playwright opens only
+PrognoCIS, matches the patient and encounter, and writes HPI, ROS, and Physical
+Examination as narrative text. The source browser scraper and note-heading
+parser have been removed.
 
 ```text
-Playwright reads the QuickRCM/QuickScribe UI
-        -> selects only an ATTESTED note
-        -> extracts patient + encounter identity
-        -> extracts explicit HPI + ROS + Physical Examination
-        -> extracts accepted ICD-10-CM rows only
-        -> rechecks that the source is unchanged
-        -> opens the exact patient and encounter in PrognoCIS
-        -> saves the clinical content as Draft
-        -> closes and reopens the encounter
-        -> verifies every field and code
-        -> rechecks QuickScribe and records local verified proof
+Care1960 POST response (HTTP or captured JSON file)
+  -> validate tenant, ATTESTED status, attestation, patient/encounter IDs
+  -> map HPI + ROS + Physical Examination
+  -> match the exact PrognoCIS patient and encounter
+  -> stop on conflicting existing text; save missing sections as a draft
+  -> reopen and verify all three sections and draft status
+  -> record local verification proof; skip the same verified content on repeats
 ```
 
-## Safety boundary
-
-The workflow requires all of the following:
-
-- The note status displayed in QuickScribe is exactly `ATTESTED`.
-- The attesting provider and timestamp are visible.
-- The provider-approved note has explicit HPI, ROS, and Physical Examination headings.
-- ICD-10-CM codes come only from the UI selector for accepted diagnosis rows.
-- The same QuickScribe screen is re-read immediately before the EHR operation and again after EHR verification.
-- Exactly one PrognoCIS patient matches first name, last name, and DOB.
-- Exactly one encounter matches service date and appointment type, plus provider and retained EHR identifiers when available.
-- Existing non-empty clinical text must either match exactly or the record stops.
-- The encounter must have an explicitly configured editable status.
-- A fresh reopen must prove all three sections, every ICD-10 code, the same encounter ID, and Draft status.
-
-The code has no Sign, Finalize, or Submit Claim path. Raw audio, raw transcript, CPT, HCPCS, suggested codes, and generic Subjective/Objective-to-EHR guesses are excluded.
-
-## Current state
-
-Implemented:
-
-- Playwright QuickScribe list/detail extractor.
-- ATTESTED-only rendered-status gate.
-- Strict HPI/ROS/Physical Examination heading parser.
-- Accepted ICD-10-row extraction.
-- Source hash and before/after source revalidation.
-- Exact PrognoCIS patient and encounter matching.
-- Conflict-safe section and diagnosis writes.
-- Draft-only save and close/reopen verification.
-- Private PHI-free audit and verified-artifact ledger.
-- Probe/run commands and a separate disabled-by-default Hermes cron installer.
-
-Still required before a live write:
-
-- Log into QuickRCM and PrognoCIS in the remote Chrome through noVNC.
-- Inspect the real rendered pages and capture stable selectors.
-- Confirm how an ATTESTED note displays its three clinical sections and accepted diagnosis codes.
-- Run a read-only one-record probe.
-- Run one supervised approved test-patient draft canary.
-
-The example configuration deliberately contains `TODO_CAPTURE...` selectors and cannot be activated as-is.
-
-## Development setup
+## Setup
 
 ```bash
-npm install
+npm ci
 cp .env.example .env
 cp config/writeback.example.json config/writeback.json
-npm test
+npm run check
 ```
 
-The `.env`, active configuration, browser profile, audit log, and verified ledger are ignored by Git.
+Set `care1960.orgId` to the expected organization UUID and configure the
+PrognoCIS selectors in `config/writeback.json`. The example organization and
+response file contain synthetic data. Active configuration, credentials, and
+runtime payloads are ignored by Git.
 
-## Commands
+## Input from an existing API response
 
-After browser selector discovery:
+Save the POST response privately as `.runtime/care1960-response.json`. The
+default `care1960.input` is `response-file`. Response validation can run before
+PrognoCIS selectors or login are configured:
 
 ```bash
-# Structure only: no website interaction.
+# Synthetic adapter example; no browser, network, or EHR writes.
+npm run validate:response -- --config config/writeback.example.json \
+  --response config/care1960-response.example.json
+
+# Validate the actual response using the configured field mappings.
+npm run validate:response -- --response .runtime/care1960-response.json
+
+# Validate configuration, then open the matching encounter without filling it.
 npm run validate:config
+npm run probe -- --response .runtime/care1960-response.json --max-records 1
 
-# Reads QuickScribe and opens the exact PrognoCIS encounter; cannot fill/save.
-npm run probe -- --max-records 1
-
-# Only after the supervised canary has been approved.
-npm run run -- --max-records 1
+# Write drafts once automation.writeEnabled and CLINICAL_WRITE_ACK are set.
+npm run run -- --response .runtime/care1960-response.json --max-records 1
 ```
 
-Draft writes require `automation.writeEnabled=true` and this exact private environment acknowledgement:
+`--response` selects file input even if the configuration uses HTTP. Relative
+paths are resolved from the repository root. Protect captured responses and
+request bodies with owner-only permissions because they can contain PHI.
+
+## Direct POST input
+
+Migration `0010` provides this read-only clinical endpoint:
 
 ```text
+POST http://127.0.0.1:54321/rest/v1/rpc/care1960_get_attested_clinical_records
+```
+
+Set `care1960.input` to `http` and use the endpoint for the intended Supabase
+instance after applying the migration there. Copy the [request example](config/care1960-request.example.json)
+to `.runtime/care1960-request.json` and replace its synthetic identifiers with
+the exact patient, encounter, and clinical job to process.
+
+Both credentials are required in `.env`: `CARE1960_API_KEY` supplies the Supabase
+instance's gateway anon key in `apikey`; `CARE1960_BEARER_TOKEN` supplies a
+registered, live Care1960 tenant API JWT in `Authorization`. Use credentials
+from the same backend instance. There is no fallback between the two.
+
+Each invocation sends the POST once and consumes that response. It does not
+retry timeouts, follow redirects, or repeat the POST during writeback checks.
+`validate:response` and `probe` also send the POST in HTTP mode. This clinical
+RPC reads attested records without updating appointment or export state.
+
+The file source is reread before/after EHR writes. HTTP mode checks the captured
+response; it does not query current upstream state or acknowledge an export to
+Supabase. Completion proof is local to this writer.
+
+Use an exact-job request for the first canary. The writer does not advance the
+API's pagination cursor. A fixed first-page request repeatedly returns the same
+records, even after the local ledger verifies them. Keep `p_limit` within the
+writer's record limit; a batch scheduler must reconcile each page's results
+before advancing its cursor.
+
+## Response fields
+
+The adapter accepts one object or an array of at most 100 objects, with a 10 MiB
+input limit. Use `care1960.recordsPath` for a nested result and `care1960.fields`
+to map field names. See [API configuration and mapping](docs/CARE1960_INTEGRATION.md)
+and [the synthetic response](config/care1960-response.example.json).
+
+Migration `0010` returns a root array that matches the default field mappings:
+`note.hpi`, `note.ros`, and `note.physical_examination`, with patient, encounter,
+and attestation metadata. Use `recordsPath: ""` and `fields: {}`. No eligible
+record returns `[]`. The earlier appointment-upsert and HPI-only export APIs
+remain separate and cannot supply this writer's clinical input.
+
+The [SQL-generated fixture](test-support/fixtures/README.md) has passed the API
+adapter and synthetic Playwright draft/read-back tests. Deployment, credentials,
+and the live PrognoCIS canary still require verification.
+
+## Destination behavior
+
+All three sections, attestation, and retained PrognoCIS patient/encounter IDs are
+required. Missing or placeholder-only findings are rejected. Physical assessment
+maps to Physical Examination, never the separate Assessment section. No diagnosis
+codes, symptom checkboxes, signing, finalization, or claims actions are performed.
+Existing different text stops the record. Existing identical text is a no-op.
+
+Draft writes retain the existing configuration gate:
+
+```dotenv
 CLINICAL_WRITE_ACK=I_ACKNOWLEDGE_ATTESTED_CLINICAL_DRAFT_WRITES
 ```
 
-## noVNC and the shared browser
-
-Chrome runs headed on remote Xvfb display `:99`. A human reaches that screen through noVNC for login/MFA, while Playwright controls the same Chrome through localhost CDP port `9223`.
-
-```text
-Human -> SSH tunnel -> noVNC -> websockify -> x11vnc -> Xvfb :99 -> Chrome
-Playwright ----------------------------------- CDP 127.0.0.1:9223 -> Chrome
-```
-
-noVNC is the human viewing/control route, not the automation engine. Both VNC `5900` and noVNC `6080` remain localhost-only. CDP must also remain localhost-only.
-
-## Repository map
-
-| Path | Responsibility |
-|---|---|
-| `src/integrations/quickscribe-browser.mjs` | Reads ATTESTED note data from the rendered QuickScribe UI |
-| `src/domain/build-export-artifact.mjs` | Extracts explicit HPI, ROS, and Physical Examination headings |
-| `src/domain/clinical-artifact.mjs` | Validates and hashes the in-memory browser artifact |
-| `src/integrations/prognocis-browser.mjs` | Exact EHR navigation, draft write, and read-back |
-| `src/workflow/writeback.mjs` | Double source check, destination call, and verified-ledger ordering |
-| `src/runtime/ledger.mjs` | Stores only non-PHI verified hash proof locally |
-| `config/writeback.example.json` | Browser-source and browser-destination selector template |
-| `docs/ARCHITECTURE.md` | Detailed browser-to-browser design |
-| `docs/LIVE_READINESS_CHECKLIST.md` | Selector discovery, probe, canary, and deployment gates |
-
-## Cron isolation
-
-The reverse clinical job remains separate from the existing appointment-import job:
-
-| Job | Direction |
-|---|---|
-| `prognocis-quickrcm-daily-dev` | PrognoCIS to QuickRCM appointments |
-| `quickrcm-prognocis-clinical-drafts` | QuickScribe UI to PrognoCIS drafts |
-
-Preview only:
-
-```bash
-./scripts/install-hermes-cron.sh --dry-run
-```
-
-Do not install the cron until the live-readiness checklist is complete.
+PrognoCIS uses the authenticated Chrome session through localhost CDP, with
+noVNC available for login/MFA. Run one configured probe and a supervised draft
+canary before scheduling. See [readiness](LIVE_READINESS_CHECKLIST.md),
+[architecture](docs/ARCHITECTURE.md), and [scheduling](docs/HERMES_CRON_GUIDE.md).

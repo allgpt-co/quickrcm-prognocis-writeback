@@ -6,7 +6,7 @@ import { artifact } from '../test-support/artifact.mjs';
 const artifacts = [artifact({ jobId: 'job-1' }), artifact({ jobId: 'job-2' })];
 const audit = { info: async () => {}, error: async () => {} };
 
-test('probe rechecks the browser source and never writes the local verified ledger', async () => {
+test('probe rechecks the API response source and never writes the local verified ledger', async () => {
   const marked = [];
   const revalidated = [];
   const result = await runWriteback({ automation: { writeEnabled: false, maxRecordsPerRun: 10 } }, {
@@ -60,7 +60,7 @@ test('write mode records only drafts that passed EHR read-back and a second sour
   assert.equal(result.failed, 1);
 });
 
-test('verified ledger hash skips an already completed browser artifact', async () => {
+test('verified ledger hash skips an already completed API artifact', async () => {
   let destinationCalls = 0;
   const result = await runWriteback({ automation: { writeEnabled: true, maxRecordsPerRun: 10 } }, {
     source: {

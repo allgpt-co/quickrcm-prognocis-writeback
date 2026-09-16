@@ -1,0 +1,31 @@
+[
+  {
+    "note": {
+      "hpi": "Synthetic HPI",
+      "ros": "Synthetic ROS",
+      "physical_examination": "Synthetic examination"
+    },
+    "org_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaa081",
+    "status": "ATTESTED",
+    "patient": {
+      "last_name": "Workflow A",
+      "first_name": "Synthetic",
+      "date_of_birth": "1990-01-01",
+      "prognocis_patient_id": "SYNTHETIC-WORKFLOW-PATIENT-A"
+    },
+    "appointment": {
+      "starts_at": "2026-09-16T17:08:04.248307Z",
+      "provider_name": "Synthetic Provider",
+      "appointment_type": "Synthetic Follow Up",
+      "prognocis_encounter_id": "SYNTHETIC-WORKFLOW-ENCOUNTER-REVIEW",
+      "prognocis_appointment_id": "SYNTHETIC-WORKFLOW-REVIEW"
+    },
+    "attestation": {
+      "note_hash": "0238f1ea3d684b2b5d354311e83c37d89dbce4e120339e92e0773c1ce555ee48",
+      "attested_at": "2026-09-16T17:08:04.248307Z",
+      "attested_by": "00000000-0000-4000-8000-000000000082",
+      "note_version": 1
+    },
+    "scribe_job_id": "50000000-0000-4000-8000-000000000082"
+  }
+]

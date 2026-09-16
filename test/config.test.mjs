@@ -21,30 +21,10 @@ function config() {
       actionTimeoutMs: 20_000,
       navigationTimeoutMs: 45_000
     },
-    quickScribe: {
-      url: 'https://quickrcm.example.test',
-      attestedNotesUrl: 'https://quickrcm.example.test/attested',
-      selectors: {
-        authenticatedMarker: '#app',
-        noteRows: '.note-row',
-        noteStatus: '.status',
-        noteOpenLink: 'a.open',
-        noteIdAttribute: 'data-job-id',
-        noteDetailRoot: '#note-detail',
-        detailStatus: '#detail-status',
-        patientId: '#patient-id',
-        patientFirstName: '#first-name',
-        patientLastName: '#last-name',
-        patientDob: '#dob',
-        appointmentId: '#appointment-id',
-        serviceDate: '#service-date',
-        appointmentType: '#appointment-type',
-        attestationAt: '#attested-at',
-        attestationBy: '#attested-by',
-        finalNote: '#final-note',
-        acceptedDiagnosisRows: '.diagnosis.accepted',
-        diagnosisCode: '.code'
-      }
+    care1960: {
+      input: 'response-file',
+      responseFile: '.runtime/care1960-response.json',
+      orgId: '11111111-1111-4111-8111-111111111111'
     },
     prognocis: {
       url: 'https://ehr.example.test/scrMasterFrame.jsp',
@@ -61,6 +41,7 @@ function config() {
         patientFirstName: '#first-name',
         patientLastName: '#last-name',
         patientResultRows: '#patients tr',
+        patientResultIdAttribute: 'data-patient-id',
         activePatientIdentity: '#active-patient',
         encounterMenu: '#encounter-menu',
         encounterRows: '#encounters tr',
@@ -86,36 +67,26 @@ function addWriteSelectors(value) {
     physicalExaminationField: '#pe-field',
     physicalExaminationSaveButton: '#pe-save',
     sectionSaveSuccess: '#section-saved',
-    diagnosisMenu: '#diagnosis',
-    diagnosisAddButton: '#diagnosis-add',
-    diagnosisSearchInput: '#diagnosis-search',
-    diagnosisResultRows: '#diagnosis-results tr',
-    existingDiagnosisRows: '#existing-diagnoses tr',
     saveDraftButton: '#save-draft',
     draftSaveSuccess: '#draft-saved',
     draftStatus: '#draft-status'
   });
 }
 
-test('probe configuration requires both browser source and destination selectors', () => {
+test('probe requires an API response source and PrognoCIS identity selectors', () => {
   assert.doesNotThrow(() => validateConfigObject(config()));
   const missingSource = config();
-  delete missingSource.quickScribe.selectors.finalNote;
-  assert.throws(() => validateConfigObject(missingSource), /quickScribe.*finalNote/i);
+  delete missingSource.care1960;
+  assert.throws(() => validateConfigObject(missingSource), /care1960/);
+  const legacy = config();
+  legacy.quickScribe = {};
+  assert.throws(() => validateConfigObject(legacy), /no longer supported/);
+  const missingIdentity = config();
+  delete missingIdentity.prognocis.selectors.patientResultIdAttribute;
+  assert.throws(() => validateConfigObject(missingIdentity), /patientResultIdAttribute/);
 });
 
-test('QuickScribe may derive a stable note identity after row-click navigation', () => {
-  const value = config();
-  value.quickScribe.noteIdUrlPattern = '^/scribe/encounters/([^/]+)$';
-  value.quickScribe.selectors.noteOpenLink = '';
-  value.quickScribe.selectors.noteIdAttribute = '';
-  assert.doesNotThrow(() => validateConfigObject(value));
-
-  value.quickScribe.noteIdUrlPattern = '';
-  assert.throws(() => validateConfigObject(value), /stable noteIdAttribute or noteIdUrlPattern/i);
-});
-
-test('write mode requires all three clinical sections, ICD-10, and draft proof', () => {
+test('write mode requires all three clinical sections and draft proof without diagnosis selectors', () => {
   const value = config();
   value.automation.writeEnabled = true;
   assert.throws(() => validateConfigObject(value), /hpiMenu/);
@@ -128,7 +99,7 @@ test('configuration refuses sign, finalize, and placeholder selectors', () => {
   signing.prognocis.selectors.signButton = '#sign';
   assert.throws(() => validateConfigObject(signing), /signing\/finalization/i);
   const placeholder = config();
-  placeholder.quickScribe.selectors.noteRows = 'TODO_CAPTURE_ROWS';
+  placeholder.prognocis.selectors.encounterRows = 'TODO_CAPTURE_ROWS';
   assert.throws(() => validateConfigObject(placeholder), /placeholder/i);
 });
 

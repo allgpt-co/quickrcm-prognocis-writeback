@@ -2,19 +2,19 @@ import { clinicalArtifactHash } from '../src/domain/clinical-artifact.mjs';
 
 export function artifact(overrides = {}) {
   const base = {
-    version: 2,
-    source: 'quickrcm-quickscribe',
+    version: 3,
+    source: 'care1960-scribe',
     status: 'ATTESTED',
     jobId: 'scribe-job-1',
     patient: {
-      id: 'quickrcm-patient-1',
+      id: 'care1960-patient-1',
       firstName: 'Sample',
       lastName: 'Patient',
       dob: '1980-01-02',
       prognocisPatientId: 'ehr-patient-7'
     },
     encounter: {
-      appointmentId: 'quickrcm-appointment-1',
+      appointmentId: 'care1960-appointment-1',
       startTime: '2026-09-04T15:30:00.000Z',
       appointmentType: 'Follow Up',
       providerName: 'Dr Example',
@@ -29,12 +29,7 @@ export function artifact(overrides = {}) {
       ros: 'Respiratory: cough. Constitutional: denies fever or chills.',
       physicalExamination: 'Mouth and throat normal. Lungs clear to auscultation.'
     },
-    diagnoses: [{
-      system: 'ICD10CM',
-      code: 'R05.9',
-      description: 'Cough, unspecified',
-      reviewStatus: 'ACCEPTED'
-    }]
+    diagnoses: []
   };
   const merged = { ...base, ...overrides };
   return { ...merged, artifactHash: clinicalArtifactHash(merged) };

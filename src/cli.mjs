@@ -1,6 +1,11 @@
 #!/usr/bin/env node
 import { randomUUID } from 'node:crypto';
-import { portalPage, openBrowser, closeBrowser } from './browser/session.mjs';
+import {
+  closeBrowser,
+  closeStaleLoginTargets,
+  openBrowser,
+  portalPage
+} from './browser/session.mjs';
 import { Care1960ApiSource } from './integrations/care1960-api.mjs';
 import { PrognocisBrowser } from './integrations/prognocis-browser.mjs';
 import { AuditLogger } from './runtime/audit.mjs';
@@ -68,6 +73,7 @@ async function main() {
     await audit.init();
     // Reject invalid API responses before opening or interacting with the EHR.
     await source.load();
+    await closeStaleLoginTargets(config.browser.cdpEndpoint, config.prognocis.loginUrl);
     context = await openBrowser(config.browser);
     const destinationPage = await portalPage(context, config.prognocis.url);
     const destination = new PrognocisBrowser(
@@ -82,6 +88,7 @@ async function main() {
     const ledger = new VerificationLedger(config.runtime.ledgerFile);
     await ledger.init();
     const summary = await runWriteback(config, { source, destination, ledger, audit });
+    if (args.command === 'run' && summary.failed === 0) await source.commitCursor();
     process.stdout.write(`${JSON.stringify(summary)}\n`);
     if (summary.failed > 0) process.exitCode = 1;
   } finally {

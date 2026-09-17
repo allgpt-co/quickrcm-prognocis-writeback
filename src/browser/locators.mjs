@@ -59,7 +59,7 @@ export async function clickInFrames(
   page,
   selector,
   label,
-  { allowHiddenLegacy = false, timeout = 20_000 } = {}
+  { allowHiddenLegacy = false, retryOnTransient = true, timeout = 20_000 } = {}
 ) {
   const deadline = Date.now() + timeout;
   do {
@@ -69,7 +69,9 @@ export async function clickInFrames(
         await visible.locator.click();
         return visible;
       } catch (error) {
-        if (!/context|detach|closed|destroyed/i.test(error.message) || Date.now() >= deadline) {
+        if (!retryOnTransient
+          || !/context|detach|closed|destroyed/i.test(error.message)
+          || Date.now() >= deadline) {
           throw error;
         }
       }
@@ -100,6 +102,16 @@ export async function fillField(locator, value) {
   await locator.fill(value);
   await locator.dispatchEvent('input');
   await locator.dispatchEvent('change');
+}
+
+export async function fillCredentialField(locator, value, platform) {
+  try {
+    await fillField(locator, value);
+  } catch {
+    const error = new AuthenticationRequiredError(platform);
+    error.message = `${platform} credential entry failed`;
+    throw error;
+  }
 }
 
 export async function visibleTextsInFrames(page, selector) {

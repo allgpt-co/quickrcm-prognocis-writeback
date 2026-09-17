@@ -43,7 +43,8 @@ export function encounterCellsMatch(cells, encounter, timezone) {
   const dateMatches = encounterDateVariants(encounter.startTime, timezone)
     .some((variant) => normalize(cells.dateText).includes(normalize(variant)));
   if (!dateMatches) return false;
-  if (normalize(cells.typeText) !== normalize(encounter.appointmentType)) return false;
+  if (encounter.appointmentType
+    && normalize(cells.typeText) !== normalize(encounter.appointmentType)) return false;
   if (encounter.providerName && normalize(cells.providerText) !== normalize(encounter.providerName)) return false;
   if (encounter.prognocisEncounterId
     && normalize(cells.encounterId) !== normalize(encounter.prognocisEncounterId)) return false;

@@ -24,9 +24,12 @@ test('destination permits an exact or empty section state for idempotent resume'
   }));
 });
 
-test('retained patient ID cannot be silently ignored during matching', async () => {
+test('patient search does not require a retained PrognoCIS patient ID selector', async () => {
   const destination = Object.create(PrognocisBrowser.prototype);
   destination.selectors = {};
+  destination.openPatientSearch = async () => {
+    throw new Error('PATIENT_NAME_DOB_SEARCH_REACHED');
+  };
   await assert.rejects(
     destination.selectPatient({
       firstName: 'Sample',
@@ -34,6 +37,6 @@ test('retained patient ID cannot be silently ignored during matching', async () 
       dob: '1980-01-02',
       prognocisPatientId: 'ehr-patient-7'
     }),
-    /no patient ID attribute is configured/i
+    /PATIENT_NAME_DOB_SEARCH_REACHED/
   );
 });

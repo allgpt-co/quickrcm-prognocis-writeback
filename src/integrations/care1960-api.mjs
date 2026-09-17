@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises';
+import path from 'node:path';
 import {
   buildClinicalArtifact,
   validateClinicalArtifact
@@ -17,6 +18,7 @@ export const DEFAULT_RESPONSE_FIELDS = Object.freeze({
   orgId: 'org_id',
   jobId: 'scribe_job_id',
   status: 'status',
+  writtenBack: 'written_back',
   patientId: 'patient.prognocis_patient_id',
   firstName: 'patient.first_name',
   lastName: 'patient.last_name',
@@ -76,8 +78,28 @@ export function validateCare1960SourceConfig(config) {
       throw new Error('care1960.apiUrl must use HTTPS (or loopback HTTP) without credentials, query, or fragment');
     }
     if (!isText(config.requestFile)) throw new Error('care1960.requestFile is required for the POST body');
+    if (config.cursorFile !== undefined && !isText(config.cursorFile)) {
+      throw new Error('care1960.cursorFile must be a private JSON file path');
+    }
     if (!Number.isInteger(config.timeoutMs) || config.timeoutMs < 1 || config.timeoutMs > 60_000) {
       throw new Error('care1960.timeoutMs must be an integer from 1 to 60000');
+    }
+    if (config.markWrittenBackUrl !== undefined) {
+      let acknowledgementUrl;
+      try { acknowledgementUrl = new URL(config.markWrittenBackUrl); } catch {
+        throw new Error('care1960.markWrittenBackUrl must be a valid URL');
+      }
+      const acknowledgementLocal = ['localhost', '127.0.0.1', '[::1]'].includes(acknowledgementUrl.hostname);
+      if ((acknowledgementUrl.protocol !== 'https:'
+          && !(acknowledgementLocal && acknowledgementUrl.protocol === 'http:'))
+        || acknowledgementUrl.username || acknowledgementUrl.password
+        || acknowledgementUrl.hash || acknowledgementUrl.search
+        || /TODO_|YOUR-/i.test(acknowledgementUrl.href)) {
+        throw new Error('care1960.markWrittenBackUrl must use HTTPS (or loopback HTTP) without credentials, query, or fragment');
+      }
+      if (acknowledgementUrl.origin !== url.origin) {
+        throw new Error('care1960.markWrittenBackUrl must use the same origin as care1960.apiUrl');
+      }
     }
   }
   return config;
@@ -98,6 +120,12 @@ export function artifactsFromApiResponse(response, config) {
     }
     if (!isText(read('jobId')) || read('jobId').length > 100) {
       throw failure('CARE1960_RESPONSE_INVALID', 'Care1960 response is missing a stable clinical job ID');
+    }
+    if (read('writtenBack') !== false) {
+      throw failure(
+        'CARE1960_WRITEBACK_STATE_INVALID',
+        'Care1960 response records must have written_back exactly false'
+      );
     }
     // Namespace job identity by tenant. No organization is inferred from names.
     const jobId = `${config.orgId.toLowerCase()}:${read('jobId').trim()}`;
@@ -134,7 +162,7 @@ export function artifactsFromApiResponse(response, config) {
     } catch {
       // Validation may process PHI; expose only a controlled error at the API boundary.
       throw failure('CARE1960_RECORD_INVALID',
-        'Care1960 record requires ATTESTED status, attestation, exact patient/encounter identity, and substantive clinical sections');
+        'Care1960 record requires ATTESTED status, attestation, patient name/DOB, appointment date, and substantive clinical sections');
     }
   });
 }
@@ -168,6 +196,46 @@ async function readJsonFile(file) {
   }
 }
 
+async function readCursorFile(file) {
+  if (!file) return null;
+  let value;
+  try {
+    value = parseJson(await fs.readFile(file, 'utf8'));
+  } catch (error) {
+    if (error.code === 'ENOENT') return null;
+    if (error.code?.startsWith('CARE1960_')) throw error;
+    throw failure('CARE1960_CURSOR_INVALID', 'Care1960 cursor cannot be read');
+  }
+  if (!isObject(value) || Object.keys(value).sort().join(',') !== 'attestedAt,scribeJobId'
+    || !isText(value.attestedAt) || Number.isNaN(new Date(value.attestedAt).valueOf())
+    || !/T.*(?:Z|[+-]\d{2}:\d{2})$/.test(value.attestedAt) || !isText(value.scribeJobId)
+    || value.scribeJobId.length > 100) {
+    throw failure('CARE1960_CURSOR_INVALID', 'Care1960 cursor is malformed');
+  }
+  return value;
+}
+
+async function writeCursorFile(file, cursor) {
+  await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
+  await fs.chmod(path.dirname(file), 0o700);
+  const temporary = `${file}.tmp-${process.pid}`;
+  try {
+    await fs.writeFile(temporary, `${JSON.stringify(cursor)}\n`, { mode: 0o600, flag: 'wx' });
+    const handle = await fs.open(temporary, 'r');
+    await handle.sync();
+    await handle.close();
+    await fs.rename(temporary, file);
+    await fs.chmod(file, 0o600);
+    const directory = await fs.open(path.dirname(file), 'r');
+    await directory.sync();
+    await directory.close();
+  } finally {
+    await fs.unlink(temporary).catch((error) => {
+      if (error.code !== 'ENOENT') throw error;
+    });
+  }
+}
+
 async function readResponseJson(response) {
   const chunks = [];
   let size = 0;
@@ -182,6 +250,9 @@ async function readResponseJson(response) {
 export class Care1960ApiSource {
   #snapshot;
   #loadPromise;
+  #selected = [];
+  #hasMore = false;
+  #acknowledgementPromises = new Map();
 
   constructor(config, { apiKey = '', bearerToken = '' } = {}, { fetchImpl = fetch } = {}) {
     this.config = structuredClone(validateCare1960SourceConfig(config));
@@ -197,6 +268,14 @@ export class Care1960ApiSource {
     }
     const body = await readJsonFile(this.config.requestFile);
     if (!isObject(body)) throw failure('CARE1960_REQUEST_INVALID', 'Care1960 POST body must be a JSON object');
+    const cursor = await readCursorFile(this.config.cursorFile);
+    if (cursor) {
+      if (Object.hasOwn(body, 'p_after_attested_at') || Object.hasOwn(body, 'p_after_scribe_job_id')) {
+        throw failure('CARE1960_REQUEST_INVALID', 'Care1960 request file must not override the durable cursor');
+      }
+      body.p_after_attested_at = cursor.attestedAt;
+      body.p_after_scribe_job_id = cursor.scribeJobId;
+    }
     let response;
     try {
       response = await this.fetch(this.config.apiUrl, {
@@ -219,6 +298,7 @@ export class Care1960ApiSource {
       await response.body?.cancel().catch(() => {});
       throw failure(`CARE1960_HTTP_${response.status}`, `Care1960 POST returned HTTP ${response.status}`);
     }
+    this.#hasMore = String(response.headers.get('X-Care1960-Has-More') ?? '').toLowerCase() === 'true';
     try { return await readResponseJson(response); } catch (error) {
       if (error.code?.startsWith('CARE1960_')) throw error;
       throw failure('CARE1960_RESPONSE_INVALID', 'Care1960 response could not be read');
@@ -237,8 +317,29 @@ export class Care1960ApiSource {
   async listAttestedArtifacts(limit) {
     if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error('Care1960 limit must be from 1 to 100');
     await this.load();
-    return structuredClone(this.#snapshot.slice(0, limit));
+    this.#selected = this.#snapshot.slice(0, limit);
+    return structuredClone(this.#selected);
   }
+
+  async commitCursor() {
+    if (this.config.input !== 'http' || !this.config.cursorFile || this.#selected.length === 0) return false;
+    const selected = [...this.#selected].sort((left, right) => {
+      const byTime = left.attestation.at.localeCompare(right.attestation.at);
+      return byTime || left.jobId.localeCompare(right.jobId);
+    });
+    const last = selected.at(-1);
+    const prefix = `${this.config.orgId.toLowerCase()}:`;
+    if (!last.jobId.startsWith(prefix)) {
+      throw failure('CARE1960_CURSOR_INVALID', 'Care1960 cursor job identity is invalid');
+    }
+    await writeCursorFile(this.config.cursorFile, {
+      attestedAt: last.attestation.at,
+      scribeJobId: last.jobId.slice(prefix.length)
+    });
+    return true;
+  }
+
+  hasMore() { return this.#hasMore; }
 
   async revalidate(artifact) {
     await this.load();
@@ -253,5 +354,95 @@ export class Care1960ApiSource {
     // HTTP mode verifies the captured response, not current upstream state.
     // File mode also rereads the response file before/after the EHR operation.
     return true;
+  }
+
+  async markWrittenBack(artifact) {
+    await this.load();
+    validateClinicalArtifact(artifact);
+    if (this.config.input !== 'http' || !isText(this.config.markWrittenBackUrl)) {
+      throw failure(
+        'CARE1960_ACKNOWLEDGEMENT_CONFIG_INVALID',
+        'Care1960 mark-written-back endpoint is required for HTTP write mode'
+      );
+    }
+    if (!isText(this.apiKey) || !isText(this.bearerToken)) {
+      throw failure('CARE1960_AUTH_REQUIRED', 'Care1960 gateway API key and separate tenant bearer token are required');
+    }
+    const prefix = `${this.config.orgId.toLowerCase()}:`;
+    if (!artifact.jobId.startsWith(prefix)) {
+      throw failure('CARE1960_ACKNOWLEDGEMENT_INVALID', 'Care1960 acknowledgement job identity is invalid');
+    }
+    const scribeJobId = artifact.jobId.slice(prefix.length);
+    if (!isText(scribeJobId) || scribeJobId.length > 100) {
+      throw failure('CARE1960_ACKNOWLEDGEMENT_INVALID', 'Care1960 acknowledgement job identity is invalid');
+    }
+    if (this.#acknowledgementPromises.has(artifact.artifactHash)) {
+      return this.#acknowledgementPromises.get(artifact.artifactHash);
+    }
+    const request = this.#postMarkWrittenBack(scribeJobId);
+    this.#acknowledgementPromises.set(artifact.artifactHash, request);
+    return request;
+  }
+
+  async #postMarkWrittenBack(scribeJobId) {
+    let response;
+    try {
+      response = await this.fetch(this.config.markWrittenBackUrl, {
+        method: 'POST',
+        redirect: 'error',
+        cache: 'no-store',
+        signal: AbortSignal.timeout(this.config.timeoutMs),
+        headers: {
+          apikey: this.apiKey,
+          Authorization: `Bearer ${this.bearerToken}`,
+          Accept: 'application/json',
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          p_scribe_job_id: scribeJobId,
+          p_written_back: true
+        })
+      });
+    } catch {
+      throw failure(
+        'CARE1960_ACKNOWLEDGEMENT_UNAVAILABLE',
+        'Care1960 mark-written-back POST failed; no automatic retry was attempted'
+      );
+    }
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => {});
+      throw failure(
+        `CARE1960_ACKNOWLEDGEMENT_HTTP_${response.status}`,
+        `Care1960 mark-written-back POST returned HTTP ${response.status}`
+      );
+    }
+    let payload;
+    try {
+      payload = await readResponseJson(response);
+    } catch {
+      throw failure(
+        'CARE1960_ACKNOWLEDGEMENT_INVALID',
+        'Care1960 mark-written-back response could not be validated'
+      );
+    }
+    const row = Array.isArray(payload) && payload.length === 1 ? payload[0] : null;
+    const uuid = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
+    if (!isObject(row) || row.scribe_job_id !== scribeJobId
+      || !uuid.test(String(row.clinical_export_id ?? ''))
+      || row.written_back !== true
+      || !isText(row.written_back_at)
+      || Number.isNaN(new Date(row.written_back_at).valueOf())
+      || !/T.*(?:Z|[+-]\d{2}:\d{2})$/.test(row.written_back_at)) {
+      throw failure(
+        'CARE1960_ACKNOWLEDGEMENT_INVALID',
+        'Care1960 mark-written-back response did not prove the exact row was acknowledged'
+      );
+    }
+    return {
+      scribeJobId,
+      clinicalExportId: row.clinical_export_id,
+      writtenBack: true,
+      writtenBackAt: new Date(row.written_back_at).toISOString()
+    };
   }
 }

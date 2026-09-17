@@ -16,10 +16,10 @@ import { runWriteback } from '../src/workflow/writeback.mjs';
 
 const example = JSON.parse(await fs.readFile(new URL('../config/care1960-response.example.json', import.meta.url)));
 const fileConfig = { input: 'response-file', responseFile: 'unused.json', orgId: example.org_id };
-const record = () => structuredClone(example);
+const record = () => ({ ...structuredClone(example), written_back: false });
 const sqlResponse = JSON.parse(await fs.readFile(
   new URL('../test-support/fixtures/care1960-0010-response.json', import.meta.url)
-));
+)).map((value) => ({ ...value, written_back: false }));
 
 async function files(t, value = record()) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'care1960-api-'));
@@ -57,6 +57,19 @@ test('maps explicit API fields to a normalized three-section artifact and scopes
   assert.deepEqual(value.diagnoses, []);
 });
 
+test('accepts only an explicit false written_back source state before browser work', () => {
+  assert.equal(artifactsFromApiResponse(record(), fileConfig).length, 1);
+  for (const writtenBack of [undefined, true, null, 0, 'false']) {
+    const value = record();
+    if (writtenBack === undefined) delete value.written_back;
+    else value.written_back = writtenBack;
+    assert.throws(
+      () => artifactsFromApiResponse(value, fileConfig),
+      { code: 'CARE1960_WRITEBACK_STATE_INVALID' }
+    );
+  }
+});
+
 test('maps wrapped POST responses and database section names through configured JSON paths', () => {
   const value = record();
   value.note = { hpi_text: 'Documented HPI.', ros_text: 'Documented ROS.', physical_exam_text: 'Documented exam.' };
@@ -68,6 +81,18 @@ test('maps wrapped POST responses and database section names through configured 
   assert.deepEqual(artifact.sections, { hpi: 'Documented HPI.', ros: 'Documented ROS.', physicalExamination: 'Documented exam.' });
 });
 
+test('accepts null PrognoCIS identities and appointment type from the API', () => {
+  const value = record();
+  value.patient.prognocis_patient_id = null;
+  value.appointment.prognocis_encounter_id = null;
+  value.appointment.appointment_type = null;
+  const [artifact] = artifactsFromApiResponse(value, fileConfig);
+  assert.equal(artifact.patient.id, null);
+  assert.equal(artifact.patient.prognocisPatientId, null);
+  assert.equal(artifact.encounter.prognocisEncounterId, null);
+  assert.equal(artifact.encounter.appointmentType, null);
+});
+
 test('rejects sync-only, HPI-only, unapproved, wrong-tenant, ambiguous, or identity-incomplete responses', () => {
   assert.throws(() => artifactsFromApiResponse([{ authorized_org_id: example.org_id, sync_result: 'UNCHANGED' }], fileConfig));
   const hpiOnly = record();
@@ -77,8 +102,7 @@ test('rejects sync-only, HPI-only, unapproved, wrong-tenant, ambiguous, or ident
   for (const edit of [
     (value) => { value.status = 'READY_FOR_REVIEW'; },
     (value) => { value.attestation = {}; },
-    (value) => { value.patient.prognocis_patient_id = ''; },
-    (value) => { value.appointment.prognocis_encounter_id = ''; },
+    (value) => { value.appointment.prognocis_appointment_id = ''; },
     (value) => { value.patient.date_of_birth = '2026-02-30'; },
     (value) => { value.appointment.starts_at = '2026-09-16T15:30:00'; },
     (value) => { value.note.ros = 'Not documented.'; }
@@ -103,7 +127,12 @@ test('response files are reread and changed content prevents recording verificat
       await fs.writeFile(responseFile, JSON.stringify(edited));
       return { status: 'DRAFT_VERIFIED', ehrEncounterId: example.appointment.prognocis_encounter_id };
     } },
-    ledger: { has: () => false, markVerified: async () => { verified = true; } },
+    ledger: {
+      has: () => false,
+      isAcknowledged: () => false,
+      markVerified: async () => { verified = true; },
+      markAcknowledged: async () => assert.fail('Changed source must not be acknowledged')
+    },
     audit: { info: async () => {}, error: async () => {} }
   });
   assert.equal(result.failed, 1);
@@ -119,14 +148,31 @@ test('POST sends configured auth/body exactly once and the captured response dri
     req.on('end', () => {
       requests.push({ headers: req.headers, method: req.method, body: JSON.parse(body) });
       res.setHeader('Content-Type', 'application/json');
-      res.end(JSON.stringify([record()]));
+      if (req.url.endsWith('/care1960_mark_clinical_record_written_back')) {
+        res.end(JSON.stringify([{
+          scribe_job_id: example.scribe_job_id,
+          clinical_export_id: '44444444-4444-4444-8444-444444444444',
+          written_back: true,
+          written_back_at: '2026-09-17T20:00:00Z'
+        }]));
+      } else {
+        res.end(JSON.stringify([record()]));
+      }
     });
   });
-  const source = new Care1960ApiSource({ ...fileConfig, input: 'http', requestFile, apiUrl, timeoutMs: 1_000 }, {
+  const source = new Care1960ApiSource({
+    ...fileConfig,
+    input: 'http',
+    requestFile,
+    apiUrl,
+    markWrittenBackUrl: apiUrl.replace('/clinical_response', '/care1960_mark_clinical_record_written_back'),
+    timeoutMs: 1_000
+  }, {
     apiKey: 'synthetic-api-key', bearerToken: 'synthetic-tenant-jwt'
   });
   let writes = 0;
   const hashes = new Set();
+  const acknowledged = new Set();
   const services = {
     source,
     destination: { process: async (value) => {
@@ -134,18 +180,114 @@ test('POST sends configured auth/body exactly once and the captured response dri
       assert.equal(value.sections.physicalExamination, example.note.physical_examination);
       return { status: 'DRAFT_VERIFIED', ehrEncounterId: value.encounter.prognocisEncounterId };
     } },
-    ledger: { has: (hash) => hashes.has(hash), markVerified: async ({ artifactHash }) => hashes.add(artifactHash) },
+    ledger: {
+      has: (hash) => hashes.has(hash),
+      isAcknowledged: (hash) => acknowledged.has(hash),
+      markVerified: async ({ artifactHash }) => hashes.add(artifactHash),
+      markAcknowledged: async ({ artifactHash }) => acknowledged.add(artifactHash)
+    },
     audit: { info: async () => {}, error: async () => {} }
   };
   const config = { automation: { writeEnabled: true, maxRecordsPerRun: 1 } };
   assert.equal((await runWriteback(config, services)).verified, 1);
   assert.equal((await runWriteback(config, services)).skipped, 1);
   assert.equal(writes, 1);
-  assert.equal(requests.length, 1);
+  assert.equal(requests.length, 2);
   assert.equal(requests[0].method, 'POST');
   assert.equal(requests[0].headers.apikey, 'synthetic-api-key');
   assert.equal(requests[0].headers.authorization, 'Bearer synthetic-tenant-jwt');
   assert.deepEqual(requests[0].body, { p_prognocis_appointment_id: 'synthetic-appointment-1' });
+  assert.deepEqual(requests[1].body, {
+    p_scribe_job_id: example.scribe_job_id,
+    p_written_back: true
+  });
+});
+
+test('mark-written-back POST uses the exact source job ID and validates the returned row', async (t) => {
+  const { requestFile } = await files(t);
+  const requests = [];
+  const apiUrl = await server(t, (req, res) => {
+    let body = '';
+    req.on('data', (chunk) => { body += chunk; });
+    req.on('end', () => {
+      requests.push({ url: req.url, headers: req.headers, body: JSON.parse(body) });
+      res.setHeader('Content-Type', 'application/json');
+      if (req.url.endsWith('/care1960_mark_clinical_record_written_back')) {
+        res.end(JSON.stringify([{
+          scribe_job_id: example.scribe_job_id,
+          clinical_export_id: '44444444-4444-4444-8444-444444444444',
+          written_back: true,
+          written_back_at: '2026-09-17T20:00:00.000000Z'
+        }]));
+      } else {
+        res.end(JSON.stringify([record()]));
+      }
+    });
+  });
+  const markWrittenBackUrl = apiUrl.replace(
+    '/clinical_response',
+    '/care1960_mark_clinical_record_written_back'
+  );
+  const source = new Care1960ApiSource({
+    ...fileConfig,
+    input: 'http',
+    requestFile,
+    apiUrl,
+    markWrittenBackUrl,
+    timeoutMs: 1_000
+  }, { apiKey: 'synthetic-api-key', bearerToken: 'synthetic-tenant-jwt' });
+  const [artifact] = await source.listAttestedArtifacts(1);
+  const acknowledgement = await source.markWrittenBack(artifact);
+  assert.deepEqual(acknowledgement, {
+    scribeJobId: example.scribe_job_id,
+    clinicalExportId: '44444444-4444-4444-8444-444444444444',
+    writtenBack: true,
+    writtenBackAt: '2026-09-17T20:00:00.000Z'
+  });
+  assert.equal(requests.length, 2);
+  assert.deepEqual(requests[1].body, {
+    p_scribe_job_id: example.scribe_job_id,
+    p_written_back: true
+  });
+  assert.equal(requests[1].headers.apikey, 'synthetic-api-key');
+  assert.equal(requests[1].headers.authorization, 'Bearer synthetic-tenant-jwt');
+});
+
+test('an ambiguous mark response fails closed and is not replayed by one source instance', async (t) => {
+  const { requestFile } = await files(t);
+  let markCalls = 0;
+  const apiUrl = await server(t, (req, res) => {
+    req.resume();
+    req.on('end', () => {
+      res.setHeader('Content-Type', 'application/json');
+      if (req.url.endsWith('/care1960_mark_clinical_record_written_back')) {
+        markCalls += 1;
+        res.end(JSON.stringify([{
+          scribe_job_id: '99999999-9999-4999-8999-999999999999',
+          clinical_export_id: '44444444-4444-4444-8444-444444444444',
+          written_back: true,
+          written_back_at: '2026-09-17T20:00:00Z'
+        }]));
+      } else {
+        res.end(JSON.stringify([record()]));
+      }
+    });
+  });
+  const source = new Care1960ApiSource({
+    ...fileConfig,
+    input: 'http',
+    requestFile,
+    apiUrl,
+    markWrittenBackUrl: apiUrl.replace('/clinical_response', '/care1960_mark_clinical_record_written_back'),
+    timeoutMs: 1_000
+  }, { apiKey: 'synthetic-api-key', bearerToken: 'synthetic-tenant-jwt' });
+  const [artifact] = await source.listAttestedArtifacts(1);
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    await assert.rejects(source.markWrittenBack(artifact), {
+      code: 'CARE1960_ACKNOWLEDGEMENT_INVALID'
+    });
+  }
+  assert.equal(markCalls, 1);
 });
 
 test('HTTP failures and invalid JSON never expose response bodies or retry the upsert', async (t) => {
@@ -239,6 +381,45 @@ test('migration 0010 SQL response is accepted through HTTP with no field overrid
   assert.deepEqual(requests[0].body, body);
   await source.revalidate(artifact);
   assert.equal(requests.length, 1);
+});
+
+test('HTTP cursor is injected and advances only after explicit successful reconciliation', async (t) => {
+  const { directory, requestFile } = await files(t);
+  await fs.writeFile(requestFile, JSON.stringify({ p_limit: 1 }), { mode: 0o600 });
+  const cursorFile = path.join(directory, 'cursor.json');
+  const originalCursor = {
+    attestedAt: '2026-09-15T10:00:00.000Z',
+    scribeJobId: '11111111-1111-4111-8111-111111111111'
+  };
+  await fs.writeFile(cursorFile, JSON.stringify(originalCursor), { mode: 0o600 });
+  const requests = [];
+  const apiUrl = await server(t, (req, res) => {
+    let content = '';
+    req.on('data', (chunk) => { content += chunk; });
+    req.on('end', () => {
+      requests.push(JSON.parse(content));
+      res.setHeader('Content-Type', 'application/json');
+      res.setHeader('X-Care1960-Has-More', 'true');
+      res.end(JSON.stringify(sqlResponse));
+    });
+  });
+  const source = new Care1960ApiSource({
+    input: 'http', orgId: sqlResponse[0].org_id, apiUrl, requestFile, cursorFile, timeoutMs: 1_000
+  }, { apiKey: 'synthetic-key', bearerToken: 'synthetic-tenant-jwt' });
+  const [artifact] = await source.listAttestedArtifacts(1);
+  assert.deepEqual(requests[0], {
+    p_limit: 1,
+    p_after_attested_at: originalCursor.attestedAt,
+    p_after_scribe_job_id: originalCursor.scribeJobId
+  });
+  assert.deepEqual(JSON.parse(await fs.readFile(cursorFile, 'utf8')), originalCursor);
+  assert.equal(source.hasMore(), true);
+  assert.equal(await source.commitCursor(), true);
+  assert.deepEqual(JSON.parse(await fs.readFile(cursorFile, 'utf8')), {
+    attestedAt: artifact.attestation.at,
+    scribeJobId: sqlResponse[0].scribe_job_id
+  });
+  assert.equal((await fs.stat(cursorFile)).mode & 0o777, 0o600);
 });
 
 test('an absent tenant JWT does not fall back to the gateway anon key', async (t) => {

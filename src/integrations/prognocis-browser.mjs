@@ -10,6 +10,7 @@ import {
 import {
   AuthenticationRequiredError,
   clickInFrames,
+  fillCredentialField,
   fillField,
   firstVisible,
   firstVisibleInFrames,
@@ -31,15 +32,34 @@ function stableEncounterId(rawValue, configuredPattern) {
   return String(raw.match(new RegExp(configuredPattern))?.[1] ?? '').trim();
 }
 
-async function waitForConfiguredSave(page, { urlPattern, successSelector, timeoutMs, label }, action) {
+export function stablePatientId(rawValue, configuredPattern) {
+  const raw = String(rawValue ?? '').trim();
+  if (!raw) return '';
+  if (!configuredPattern) return raw;
+  return String(raw.match(new RegExp(configuredPattern))?.[1] ?? '').trim();
+}
+
+export async function waitForConfiguredSave(page, { urlPattern, successSelector, timeoutMs, label }, action) {
   const responsePromise = urlPattern
     ? page.waitForResponse((response) => response.request().method() === 'POST'
       && new RegExp(urlPattern, 'i').test(response.url()), { timeout: timeoutMs })
     : null;
-  await action();
-  if (responsePromise) {
-    const response = await responsePromise;
-    if (!response.ok()) throw new Error(`${label} returned HTTP ${response.status()}`);
+  const responseObserver = responsePromise?.then(
+    (response) => ({ ok: true, response, error: null }),
+    (error) => ({ ok: false, response: null, error })
+  ) ?? null;
+  try {
+    await action();
+  } catch (error) {
+    void responseObserver;
+    throw error;
+  }
+  if (responseObserver) {
+    const outcome = await responseObserver;
+    if (!outcome.ok) throw outcome.error;
+    if (!outcome.response.ok()) {
+      throw new Error(`${label} returned HTTP ${outcome.response.status()}`);
+    }
   }
   if (successSelector) await firstVisibleInFrames(page, successSelector, `${label} confirmation`, timeoutMs);
 }
@@ -57,6 +77,31 @@ async function firstEditableInFrames(page, selector, label, timeoutMs = 10_000) 
     await page.waitForTimeout(100);
   } while (Date.now() < deadline);
   throw new Error(`Editable element not found in any frame for ${label}`);
+}
+
+async function valueInFrames(page, selector) {
+  if (!selector) return '';
+  for (const scope of pageScopes(page)) {
+    const matches = scope.locator(selector);
+    const count = await matches.count().catch(() => 0);
+    for (let index = 0; index < count; index += 1) {
+      const locator = matches.nth(index);
+      const value = await locator.inputValue().catch(() => locator.getAttribute('value'));
+      if (String(value ?? '').trim()) return String(value).trim();
+    }
+  }
+  return '';
+}
+
+async function requireValueInFrames(page, selector, expected, label, timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs;
+  do {
+    if (await valueInFrames(page, selector) === expected) return expected;
+    await page.waitForTimeout(100);
+  } while (Date.now() < deadline);
+  const error = new Error(`${label} did not become active after exact selection`);
+  error.code = 'HPI_COMPLAINT_NOT_ACTIVE';
+  throw error;
 }
 
 async function contextPageWithVisibleSelector(page, selector, label, timeoutMs) {
@@ -212,12 +257,14 @@ export class PrognocisBrowser {
       this.selectors.loginUsername,
       'PrognoCIS username'
     );
-    await fillField(username.locator, this.credentials.username);
-    await fillField(password.locator, this.credentials.password);
+    await fillCredentialField(username.locator, this.credentials.username, 'PrognoCIS');
+    await fillCredentialField(password.locator, this.credentials.password, 'PrognoCIS');
     const popupPromise = this.page.context().waitForEvent('page', {
       timeout: this.config.popupTimeoutMs
     }).catch(() => null);
-    await clickInFrames(this.page, this.selectors.loginButton, 'PrognoCIS login');
+    await clickInFrames(this.page, this.selectors.loginButton, 'PrognoCIS login', {
+      retryOnTransient: false
+    });
     const popup = await popupPromise;
     if (popup) {
       this.page = popup;
@@ -281,9 +328,6 @@ export class PrognocisBrowser {
   }
 
   async selectPatient(patient) {
-    if (patient.prognocisPatientId && !this.selectors.patientResultIdAttribute) {
-      throw new Error('Patient has a retained PrognoCIS ID but no patient ID attribute is configured');
-    }
     const searchPage = await this.openPatientSearch();
     const firstName = await firstVisibleInFrames(
       searchPage,
@@ -319,10 +363,6 @@ export class PrognocisBrowser {
         const row = rows.nth(index);
         if (!(await row.isVisible().catch(() => false))) continue;
         if (!patientRowMatches(await row.innerText().catch(() => ''), patient)) continue;
-        if (patient.prognocisPatientId && this.selectors.patientResultIdAttribute) {
-          const candidateId = await row.getAttribute(this.selectors.patientResultIdAttribute);
-          if (normalize(candidateId) !== normalize(patient.prognocisPatientId)) continue;
-        }
         matches.push(row);
       }
       if (matches.length > 0) break;
@@ -457,7 +497,8 @@ export class PrognocisBrowser {
   }
 
   async selectHpiComplaint(appointmentType) {
-    const complaintName = this.config.hpiComplaintByAppointmentType?.[appointmentType];
+    const complaintName = this.config.hpiComplaintName
+      ?? this.config.hpiComplaintByAppointmentType?.[appointmentType];
     if (!complaintName) {
       throw new Error('No exact HPI complaint mapping exists for this appointment type');
     }
@@ -508,25 +549,47 @@ export class PrognocisBrowser {
       await complaintPage.waitForTimeout(100);
     } while (Date.now() < deadline);
     const exact = requireOneMatch(matches, 'HPI complaint');
+    const rawComplaintId = await exact.getAttribute(this.config.hpiComplaintIdAttribute);
+    const complaintId = stableEncounterId(rawComplaintId, this.config.hpiComplaintIdPattern);
+    if (!complaintId) {
+      const error = new Error('Exact HPI complaint result did not expose a stable complaint ID');
+      error.code = 'HPI_COMPLAINT_ID_INVALID';
+      throw error;
+    }
+    const alreadyActive = await valueInFrames(
+      this.editorPage,
+      this.selectors.hpiActiveComplaintId
+    ) === complaintId;
     const closes = complaintPage !== this.editorPage
       ? complaintPage.waitForEvent('close', { timeout: this.config.popupTimeoutMs }).catch(() => null)
       : null;
-    if (this.selectors.hpiComplaintSelectButton) {
-      await exact.locator(this.selectors.hpiComplaintSelectButton).first().click();
-    } else {
-      await exact.click();
+    if (!alreadyActive) {
+      if (this.selectors.hpiComplaintSelectButton) {
+        await exact.locator(this.selectors.hpiComplaintSelectButton).first().click();
+      } else {
+        await exact.click();
+      }
     }
     if (this.selectors.hpiComplaintConfirmButton) {
       await clickInFrames(
         complaintPage,
         this.selectors.hpiComplaintConfirmButton,
-        'confirm HPI complaint'
+        'confirm HPI complaint',
+        { retryOnTransient: false }
       );
     }
     if (complaintPage !== this.editorPage && !complaintPage.isClosed() && !(await closes)) {
       throw new Error('PrognoCIS HPI complaint search did not close after exact selection');
     }
+    await requireValueInFrames(
+      this.editorPage,
+      this.selectors.hpiActiveComplaintId,
+      complaintId,
+      'PrognoCIS HPI complaint',
+      this.config.sectionLoadTimeoutMs ?? 10_000
+    );
     this.assertNoUnexpectedDialog();
+    return complaintId;
   }
 
   async sectionField(section, appointmentType, { allowTemplate = false } = {}) {
@@ -619,7 +682,8 @@ export class PrognocisBrowser {
       }, () => clickInFrames(
         this.editorPage,
         this.selectors[`${section}SaveButton`],
-        `PrognoCIS ${section} Save`
+        `PrognoCIS ${section} Save`,
+        { retryOnTransient: false }
       ));
       this.assertNoUnexpectedDialog();
     }
@@ -644,7 +708,9 @@ export class PrognocisBrowser {
       successSelector: this.selectors.draftSaveSuccess,
       timeoutMs: this.config.saveTimeoutMs ?? 90_000,
       label: 'PrognoCIS draft save'
-    }, () => clickInFrames(this.editorPage, this.selectors.saveDraftButton, 'PrognoCIS Save Draft'));
+    }, () => clickInFrames(this.editorPage, this.selectors.saveDraftButton, 'PrognoCIS Save Draft', {
+      retryOnTransient: false
+    }));
     const verified = this.selectors.encounterStatusCell
       ? await this.encounterStatusIs(artifact, expectedEncounterId, this.config.draftStatusPattern)
       : await this.statusSelectorMatches(this.config.draftStatusPattern, 'PrognoCIS draft status');
@@ -722,6 +788,7 @@ export class PrognocisBrowser {
     }
 
     await this.assertEncounterIsEditable();
+    await this.selectHpiComplaint(artifact.encounter.appointmentType);
     const before = await this.inspectDraft(artifact);
     if (before.exact && await this.verifyDraftStatus(artifact, ehrEncounterId)) {
       return {
@@ -736,6 +803,7 @@ export class PrognocisBrowser {
     await this.saveDraftAndVerifyStatus(artifact, ehrEncounterId);
 
     await this.reopenExactEncounter(artifact, ehrEncounterId);
+    await this.selectHpiComplaint(artifact.encounter.appointmentType);
     const after = await this.inspectDraft(artifact);
     if (!after.exact || !(await this.verifyDraftStatus(artifact, ehrEncounterId))) {
       const error = new Error('Reopened PrognoCIS draft did not match the approved clinical artifact');

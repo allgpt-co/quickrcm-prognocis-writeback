@@ -12,7 +12,11 @@ const sqlResponse = JSON.parse(await fs.readFile(
 ));
 
 test('migration 0010 response maps into all three Playwright fields, survives reopening, and repeats as a no-op', async () => {
-  const executablePath = await resolveChromiumExecutable({ projectRoot: process.cwd(), executablePath: '' });
+  const executablePath = await resolveChromiumExecutable({
+    projectRoot: '/',
+    executablePath: '/home/hermes/.hermes/home/.cache/ms-playwright/chromium-1234/chrome-linux64/chrome'
+  });
+  assert.ok(executablePath, 'The live Cron Chromium executable is required for browser fixtures');
   const browser = await chromium.launch({ headless: true, executablePath });
   try {
     const page = await browser.newPage();
@@ -55,6 +59,7 @@ test('migration 0010 response maps into all three Playwright fields, survives re
     // Identity navigation is covered by the existing matching/browser fixtures.
     // The actual section save, reload, inspection, and duplicate path run here.
     destination.open = async () => {};
+    destination.selectHpiComplaint = async () => '958';
     destination.selectPatient = async (patient) => {
       assert.equal(patient.prognocisPatientId, sqlResponse[0].patient.prognocis_patient_id);
       assert.equal(patient.firstName, sqlResponse[0].patient.first_name);

@@ -11,6 +11,8 @@ export async function runWriteback(config, { source, destination, ledger, audit 
     queued: artifacts.length,
     probed: 0,
     verified: 0,
+    acknowledged: 0,
+    recovered: 0,
     skipped: 0,
     duplicates: 0,
     failed: 0
@@ -25,12 +27,31 @@ export async function runWriteback(config, { source, destination, ledger, audit 
     const safeJobKey = jobKey(artifact.jobId);
     const started = Date.now();
     try {
-      if (config.automation.writeEnabled && ledger.has(artifact.artifactHash)) {
+      if (config.automation.writeEnabled && ledger.isAcknowledged(artifact.artifactHash)) {
         summary.skipped += 1;
-        await audit.info('writeback_record_already_verified', {
+        await audit.info('writeback_record_already_acknowledged', {
           jobKey: safeJobKey,
           artifactHash: artifact.artifactHash,
           status: 'idempotent',
+          durationMs: Date.now() - started
+        });
+        continue;
+      }
+      if (config.automation.writeEnabled && ledger.has(artifact.artifactHash)) {
+        await source.revalidate(artifact);
+        const acknowledgement = await source.markWrittenBack(artifact);
+        await ledger.markAcknowledged({
+          artifactHash: artifact.artifactHash,
+          jobKey: safeJobKey,
+          clinicalExportId: acknowledgement.clinicalExportId,
+          writtenBackAt: acknowledgement.writtenBackAt
+        });
+        summary.acknowledged += 1;
+        summary.recovered += 1;
+        await audit.info('writeback_record_acknowledgement_recovered', {
+          jobKey: safeJobKey,
+          artifactHash: artifact.artifactHash,
+          status: 'acknowledged',
           durationMs: Date.now() - started
         });
         continue;
@@ -68,6 +89,20 @@ export async function runWriteback(config, { source, destination, ledger, audit 
         status: result.duplicate ? 'idempotent' : 'written',
         durationMs: Date.now() - started
       });
+      const acknowledgement = await source.markWrittenBack(artifact);
+      await ledger.markAcknowledged({
+        artifactHash: artifact.artifactHash,
+        jobKey: safeJobKey,
+        clinicalExportId: acknowledgement.clinicalExportId,
+        writtenBackAt: acknowledgement.writtenBackAt
+      });
+      summary.acknowledged += 1;
+      await audit.info('writeback_record_acknowledged', {
+        jobKey: safeJobKey,
+        artifactHash: artifact.artifactHash,
+        status: 'acknowledged',
+        durationMs: Date.now() - started
+      });
     } catch (error) {
       summary.failed += 1;
       await audit.error('writeback_record_failed', {
@@ -77,7 +112,7 @@ export async function runWriteback(config, { source, destination, ledger, audit 
         errorCode: error.code ?? 'WRITEBACK_RECORD_FAILED',
         durationMs: Date.now() - started
       });
-      if (error.code === 'AUTH_REQUIRED') throw error;
+      if (['AUTH_REQUIRED', 'CARE1960_AUTH_REQUIRED'].includes(error.code)) throw error;
     }
   }
   return summary;

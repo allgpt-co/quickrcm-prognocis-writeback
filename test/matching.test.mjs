@@ -28,6 +28,23 @@ test('encounter match requires exact local date, type, provider, and retained ID
   assert.equal(encounterCellsMatch({ ...exact, encounterId: 'ehr-encounter-10' }, encounter, 'America/Chicago'), false);
 });
 
+test('encounter match treats appointment type and retained ID as optional filters', () => {
+  const encounter = {
+    ...artifact().encounter,
+    appointmentType: null,
+    providerName: null,
+    prognocisEncounterId: null
+  };
+  const candidate = {
+    dateText: '09/04/2026',
+    typeText: 'Any appointment name',
+    providerText: 'Any provider',
+    encounterId: 'ehr-encounter-from-prognocis'
+  };
+  assert.equal(encounterCellsMatch(candidate, encounter, 'America/Chicago'), true);
+  assert.equal(encounterCellsMatch({ ...candidate, dateText: '09/05/2026' }, encounter, 'America/Chicago'), false);
+});
+
 test('exact matching fails closed on zero or multiple candidates', () => {
   assert.equal(requireOneMatch(['only'], 'encounter'), 'only');
   assert.throws(() => requireOneMatch([], 'encounter'), /0 exact encounter matches/i);

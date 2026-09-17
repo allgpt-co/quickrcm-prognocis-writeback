@@ -7,6 +7,16 @@ import { validateCare1960SourceConfig } from '../integrations/care1960-api.mjs';
 export const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 export const WRITE_ACKNOWLEDGEMENT = 'I_ACKNOWLEDGE_ATTESTED_CLINICAL_DRAFT_WRITES';
 
+export function credentialsFromEnvironment(environment = process.env) {
+  return {
+    care1960ApiKey: environment.SUPABASE_ANON_KEY ?? '',
+    care1960BearerToken: environment.SUPABASE_TENANT_API_KEY ?? '',
+    prognocisUsername: environment.prognosis_username ?? '',
+    prognocisPassword: environment.prognosis_password ?? '',
+    writeAck: environment.CLINICAL_WRITE_ACK ?? ''
+  };
+}
+
 function object(value, label) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error(`${label} must be an object`);
@@ -64,8 +74,10 @@ function validatePrognocis(config) {
   if (appUrl.origin !== loginUrl.origin) throw new Error('PrognoCIS app and login URLs must use the same origin');
   if (typeof prognocis.loginPerRun !== 'boolean') throw new Error('prognocis.loginPerRun must be boolean');
   pattern(prognocis.patientSearchUrlPattern, 'prognocis.patientSearchUrlPattern');
+  pattern(prognocis.patientIdPattern, 'prognocis.patientIdPattern');
   pattern(prognocis.encounterHistoryUrlPattern, 'prognocis.encounterHistoryUrlPattern');
   pattern(prognocis.encounterIdPattern, 'prognocis.encounterIdPattern');
+  pattern(prognocis.hpiComplaintIdPattern, 'prognocis.hpiComplaintIdPattern');
   const sectionUrlPatterns = object(
     prognocis.sectionUrlPatterns ?? {},
     'prognocis.sectionUrlPatterns'
@@ -78,7 +90,7 @@ function validatePrognocis(config) {
   pattern(prognocis.draftStatusPattern, 'prognocis.draftStatusPattern');
   pattern(prognocis.editableStatusPattern, 'prognocis.editableStatusPattern');
   requiredSelectors(selectors, 'prognocis', [
-    'selectPatient', 'patientFirstName', 'patientLastName', 'patientResultRows', 'patientResultIdAttribute',
+    'selectPatient', 'patientFirstName', 'patientLastName', 'patientResultRows',
     'activePatientIdentity', 'encounterMenu', 'encounterRows', 'encounterDateCell',
     'encounterTypeCell', 'encounterIdAttribute', 'encounterEditorReady'
   ]);
@@ -128,8 +140,15 @@ export function validateConfigObject(config) {
   }
 
   if (automation.writeEnabled) {
+    nonEmpty(prognocis.hpiComplaintName, 'prognocis.hpiComplaintName');
+    nonEmpty(prognocis.hpiComplaintIdAttribute, 'prognocis.hpiComplaintIdAttribute');
+    nonEmpty(prognocis.hpiComplaintIdPattern, 'prognocis.hpiComplaintIdPattern');
     requiredSelectors(selectors, 'prognocis', [
+      'encounterProviderCell',
       'hpiMenu', 'hpiField', 'hpiSaveButton',
+      'hpiComplaintLookupButton', 'hpiComplaintSearchInput', 'hpiComplaintRows',
+      'hpiComplaintNameCell', 'hpiComplaintSelectButton', 'hpiComplaintConfirmButton',
+      'hpiActiveComplaintId',
       'rosMenu', 'rosField', 'rosSaveButton',
       'physicalExaminationMenu', 'physicalExaminationField', 'physicalExaminationSaveButton',
       'saveDraftButton'
@@ -144,6 +163,9 @@ export function validateConfigObject(config) {
     nonEmpty(prognocis.editableStatusPattern, 'prognocis.editableStatusPattern');
     if (!selectors.draftStatus && !selectors.encounterStatusCell) {
       throw new Error('Write mode requires draftStatus or encounterStatusCell');
+    }
+    if (config.care1960.input === 'http') {
+      nonEmpty(config.care1960.markWrittenBackUrl, 'care1960.markWrittenBackUrl');
     }
   }
 
@@ -193,24 +215,18 @@ export async function loadConfig(
     config.runtime.auditFile = path.resolve(PROJECT_ROOT, config.runtime.auditFile);
     config.runtime.ledgerFile = path.resolve(PROJECT_ROOT, config.runtime.ledgerFile);
   }
-  for (const key of ['responseFile', 'requestFile']) {
+  for (const key of ['responseFile', 'requestFile', 'cursorFile']) {
     if (config.care1960[key]) config.care1960[key] = path.resolve(PROJECT_ROOT, config.care1960[key]);
   }
-  config.secrets = {
-    care1960ApiKey: process.env.CARE1960_API_KEY ?? '',
-    care1960BearerToken: process.env.CARE1960_BEARER_TOKEN ?? '',
-    prognocisUsername: process.env.PROGNOCIS_USERNAME ?? '',
-    prognocisPassword: process.env.PROGNOCIS_PASSWORD ?? '',
-    writeAck: process.env.CLINICAL_WRITE_ACK ?? ''
-  };
+  config.secrets = credentialsFromEnvironment();
   if (requireSecrets && !sourceOnly) requireWriteApproval(config, config.secrets.writeAck);
   if (requireSecrets && config.care1960.input === 'http'
     && (!config.secrets.care1960ApiKey || !config.secrets.care1960BearerToken)) {
-    throw new Error('CARE1960_API_KEY and CARE1960_BEARER_TOKEN are both required for HTTP input');
+    throw new Error('SUPABASE_ANON_KEY and SUPABASE_TENANT_API_KEY are both required for HTTP input');
   }
   if (requireSecrets && !sourceOnly && config.prognocis.loginPerRun
     && (!config.secrets.prognocisUsername || !config.secrets.prognocisPassword)) {
-    throw new Error('PROGNOCIS_USERNAME and PROGNOCIS_PASSWORD are required for per-run login');
+    throw new Error('prognosis_username and prognosis_password are required for per-run login');
   }
   return config;
 }

@@ -16,14 +16,20 @@ test('Care1960 requires all three attested narrative sections without codes', ()
   assert.throws(() => validateClinicalArtifact(care1960Artifact({ status: 'READY_FOR_REVIEW' })), /ATTESTED/);
 });
 
-test('Care1960 requires retained PrognoCIS patient and encounter identities', () => {
+test('Care1960 accepts optional PrognoCIS identities and appointment type', () => {
   const value = care1960Artifact();
-  assert.throws(() => validateClinicalArtifact(care1960Artifact({
-    patient: { ...value.patient, prognocisPatientId: null }
-  })), /prognocisPatientId/);
-  assert.throws(() => validateClinicalArtifact(care1960Artifact({
-    encounter: { ...value.encounter, prognocisEncounterId: null }
-  })), /prognocisEncounterId/);
+  const validated = validateClinicalArtifact(care1960Artifact({
+    patient: { ...value.patient, id: null, prognocisPatientId: null },
+    encounter: {
+      ...value.encounter,
+      appointmentType: null,
+      prognocisEncounterId: null
+    }
+  }));
+  assert.equal(validated.patient.id, null);
+  assert.equal(validated.patient.prognocisPatientId, null);
+  assert.equal(validated.encounter.appointmentType, null);
+  assert.equal(validated.encounter.prognocisEncounterId, null);
 });
 
 test('Care1960 never imports codes or silently accepts a changed section', () => {

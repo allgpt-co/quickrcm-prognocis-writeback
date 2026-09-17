@@ -125,7 +125,7 @@ function hashInput(record) {
     status: record.status,
     jobId: record.jobId,
     patient: {
-      id: record.patient.id,
+      id: record.patient.id ?? null,
       firstName: record.patient.firstName,
       lastName: record.patient.lastName,
       dob: record.patient.dob,
@@ -192,18 +192,18 @@ function normalizeClinicalArtifact(value) {
     status: 'ATTESTED',
     jobId: requireText(artifact.jobId, 'jobId', 200),
     patient: {
-      id: requireText(patient.id, 'patient.id', 200),
+      id: optionalText(patient.id, 'patient.id', 200),
       firstName: requireText(patient.firstName, 'patient.firstName', 200),
       lastName: requireText(patient.lastName, 'patient.lastName', 200),
       dob: requireDate(patient.dob, 'patient.dob'),
-      prognocisPatientId: requireText(patient.prognocisPatientId, 'patient.prognocisPatientId', 200)
+      prognocisPatientId: optionalText(patient.prognocisPatientId, 'patient.prognocisPatientId', 200)
     },
     encounter: {
       appointmentId: requireText(encounter.appointmentId, 'encounter.appointmentId', 200),
       startTime: requireIsoTimestamp(encounter.startTime, 'encounter.startTime'),
-      appointmentType: requireText(encounter.appointmentType, 'encounter.appointmentType', 300),
+      appointmentType: optionalText(encounter.appointmentType, 'encounter.appointmentType', 300),
       providerName: optionalText(encounter.providerName, 'encounter.providerName', 300),
-      prognocisEncounterId: requireText(encounter.prognocisEncounterId, 'encounter.prognocisEncounterId', 200)
+      prognocisEncounterId: optionalText(encounter.prognocisEncounterId, 'encounter.prognocisEncounterId', 200)
     },
     attestation: {
       at: requireIsoTimestamp(attestation.at, 'attestation.at'),

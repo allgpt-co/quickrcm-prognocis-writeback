@@ -16,10 +16,10 @@ import { runWriteback } from '../src/workflow/writeback.mjs';
 
 const example = JSON.parse(await fs.readFile(new URL('../config/care1960-response.example.json', import.meta.url)));
 const fileConfig = { input: 'response-file', responseFile: 'unused.json', orgId: example.org_id };
-const record = () => ({ ...structuredClone(example), written_back: false });
+const record = () => structuredClone(example);
 const sqlResponse = JSON.parse(await fs.readFile(
   new URL('../test-support/fixtures/care1960-0010-response.json', import.meta.url)
-)).map((value) => ({ ...value, written_back: false }));
+));
 
 async function files(t, value = record()) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'care1960-api-'));
@@ -57,12 +57,19 @@ test('maps explicit API fields to a normalized three-section artifact and scopes
   assert.deepEqual(value.diagnoses, []);
 });
 
-test('accepts only an explicit false written_back source state before browser work', () => {
+test('accepts omitted written_back from the server-filtered API and optional explicit false', () => {
+  const value = record();
+  delete value.written_back;
+  assert.equal(artifactsFromApiResponse([value], fileConfig).length, 1);
+  value.written_back = false;
+  assert.equal(artifactsFromApiResponse([value], fileConfig).length, 1);
+});
+
+test('rejects explicitly stale or malformed written_back source states before browser work', () => {
   assert.equal(artifactsFromApiResponse(record(), fileConfig).length, 1);
-  for (const writtenBack of [undefined, true, null, 0, 'false']) {
+  for (const writtenBack of [true, null, 0, 'false']) {
     const value = record();
-    if (writtenBack === undefined) delete value.written_back;
-    else value.written_back = writtenBack;
+    value.written_back = writtenBack;
     assert.throws(
       () => artifactsFromApiResponse(value, fileConfig),
       { code: 'CARE1960_WRITEBACK_STATE_INVALID' }

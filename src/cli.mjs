@@ -18,6 +18,10 @@ function parseArgs(argv) {
   const args = { command: argv[0] ?? 'probe', config: 'config/writeback.json' };
   for (let index = 1; index < argv.length; index += 1) {
     const token = argv[index];
+    if (token === '--no-acknowledge') {
+      args.noAcknowledge = true;
+      continue;
+    }
     if (token === '--config') args.config = argv[++index];
     else if (token === '--response') args.responseFile = argv[++index];
     else if (token === '--max-records') args.maxRecords = Number(argv[++index]);
@@ -26,6 +30,9 @@ function parseArgs(argv) {
   }
   if (!['probe', 'run', 'validate-config', 'validate-response'].includes(args.command)) {
     throw new Error(`Unknown command: ${args.command}`);
+  }
+  if (args.noAcknowledge && args.command !== 'run') {
+    throw new Error('--no-acknowledge is supported only with run');
   }
   if (args.maxRecords !== undefined
     && (!Number.isInteger(args.maxRecords) || args.maxRecords < 1 || args.maxRecords > 100)) {
@@ -87,8 +94,11 @@ async function main() {
     );
     const ledger = new VerificationLedger(config.runtime.ledgerFile);
     await ledger.init();
-    const summary = await runWriteback(config, { source, destination, ledger, audit });
-    if (args.command === 'run' && summary.failed === 0) await source.commitCursor();
+    const summary = await runWriteback(config, { source, destination, ledger, audit }, {
+      acknowledgeSource: !args.noAcknowledge
+    });
+    // A supervised no-ack run must not consume a page or advance its cursor.
+    if (args.command === 'run' && !args.noAcknowledge && summary.failed === 0) await source.commitCursor();
     process.stdout.write(`${JSON.stringify(summary)}\n`);
     if (summary.failed > 0) process.exitCode = 1;
   } finally {

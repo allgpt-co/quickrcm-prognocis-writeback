@@ -121,10 +121,13 @@ export function artifactsFromApiResponse(response, config) {
     if (!isText(read('jobId')) || read('jobId').length > 100) {
       throw failure('CARE1960_RESPONSE_INVALID', 'Care1960 response is missing a stable clinical job ID');
     }
-    if (read('writtenBack') !== false) {
+    // The fetch RPC filters written_back=false server-side and omits the field.
+    // Accept omission; reject an explicitly stale or malformed state if supplied.
+    const writtenBack = read('writtenBack');
+    if (writtenBack !== undefined && writtenBack !== false) {
       throw failure(
         'CARE1960_WRITEBACK_STATE_INVALID',
-        'Care1960 response records must have written_back exactly false'
+        'Care1960 response written_back must be false when supplied'
       );
     }
     // Namespace job identity by tenant. No organization is inferred from names.

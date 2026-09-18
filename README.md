@@ -49,7 +49,16 @@ npm run probe -- --response .runtime/care1960-response.json --max-records 1
 
 # Write drafts once automation.writeEnabled and CLINICAL_WRITE_ACK are set.
 npm run run -- --response .runtime/care1960-response.json --max-records 1
+
+# Supervised draft writes and read-back, without marking the source written_back.
+npm run run -- --config config/writeback.json --max-records 1 --no-acknowledge
 ```
+
+`run --no-acknowledge` keeps draft/conflict/read-back safeguards and local
+verification proof, but never calls the source acknowledgement endpoint, marks
+local acknowledgement, or advances the API cursor. A verified replay does not
+rewrite the EHR. A later normal run can acknowledge a locally verified draft;
+keep this flag on all runs while deliberately withholding acknowledgement.
 
 `--response` selects file input even if the configuration uses HTTP. Relative
 paths are resolved from the repository root. Protect captured responses and
@@ -101,6 +110,10 @@ and attestation metadata. Use `recordsPath: ""` and `fields: {}`. No eligible
 record returns `[]`. The earlier appointment-upsert and HPI-only export APIs
 remain separate and cannot supply this writer's clinical input.
 
+The fetch RPC filters `written_back=false` server-side, so `written_back` is
+not required in its response. If supplied, it must be `false`. This does not
+change the separate writeback acknowledgement validation.
+
 The [SQL-generated fixture](test-support/fixtures/README.md) has passed the API
 adapter and synthetic Playwright draft/read-back tests. Deployment, credentials,
 and the live PrognoCIS canary still require verification.
@@ -112,6 +125,15 @@ required. Missing or placeholder-only findings are rejected. Physical assessment
 maps to Physical Examination, never the separate Assessment section. No diagnosis
 codes, symptom checkboxes, signing, finalization, or claims actions are performed.
 Existing different text stops the record. Existing identical text is a no-op.
+
+Before entering HPI, the writer opens the HPI menu, searches the complaint
+lookup for the configured `hpiComplaintName` (`Wellness exam`), selects only one
+exact matching row, and verifies its active complaint ID. The checkbox is
+checked rather than toggled. The same active ID is checked again immediately
+before filling HPI and before saving it. Read-back reselects the same complaint
+to verify the correct HPI narrative slot. Missing, ambiguous, or inactive
+complaint selection stops the write. Probe mode never selects a complaint.
+See [the Wellness Exam flow](docs/PROGNOCIS_WELLNESS_HPI_FLOW.md).
 
 Draft writes retain the existing configuration gate:
 

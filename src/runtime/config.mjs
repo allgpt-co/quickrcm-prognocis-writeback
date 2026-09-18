@@ -87,6 +87,11 @@ function validatePrognocis(config) {
   }
   pattern(prognocis.sectionSaveUrlPattern, 'prognocis.sectionSaveUrlPattern');
   pattern(prognocis.draftSaveUrlPattern, 'prognocis.draftSaveUrlPattern');
+  pattern(prognocis.draftSaveFrameUrlPattern, 'prognocis.draftSaveFrameUrlPattern');
+  for (const [section, value] of Object.entries(prognocis.sectionSaveUrlPatterns ?? {})) {
+    if (!['hpi', 'ros', 'physicalExamination'].includes(section)) throw new Error('Unknown section save pattern');
+    pattern(value, `prognocis.sectionSaveUrlPatterns.${section}`);
+  }
   pattern(prognocis.draftStatusPattern, 'prognocis.draftStatusPattern');
   pattern(prognocis.editableStatusPattern, 'prognocis.editableStatusPattern');
   requiredSelectors(selectors, 'prognocis', [
@@ -112,6 +117,10 @@ export function validateConfigObject(config) {
   }
   validateCare1960SourceConfig(config.care1960);
   const { prognocis, selectors } = validatePrognocis(config);
+  if (prognocis.draftSaveStrategy !== undefined
+    && !['explicit-button', 'sections-only'].includes(prognocis.draftSaveStrategy)) {
+    throw new Error('prognocis.draftSaveStrategy must be explicit-button or sections-only');
+  }
 
   if (typeof automation.writeEnabled !== 'boolean') throw new Error('automation.writeEnabled must be boolean');
   if (automation.draftOnly !== true) throw new Error('automation.draftOnly must remain true');
@@ -150,14 +159,16 @@ export function validateConfigObject(config) {
       'hpiComplaintNameCell', 'hpiComplaintSelectButton', 'hpiComplaintConfirmButton',
       'hpiActiveComplaintId',
       'rosMenu', 'rosField', 'rosSaveButton',
-      'physicalExaminationMenu', 'physicalExaminationField', 'physicalExaminationSaveButton',
-      'saveDraftButton'
+      'physicalExaminationMenu', 'physicalExaminationField', 'physicalExaminationSaveButton'
     ]);
     if (!selectors.sectionSaveSuccess && !prognocis.sectionSaveUrlPattern) {
       throw new Error('Write mode requires sectionSaveSuccess or sectionSaveUrlPattern');
     }
-    if (!selectors.draftSaveSuccess && !prognocis.draftSaveUrlPattern) {
-      throw new Error('Write mode requires draftSaveSuccess or draftSaveUrlPattern');
+    if (prognocis.draftSaveStrategy !== 'sections-only') {
+      requiredSelectors(selectors, 'prognocis', ['saveDraftButton']);
+      if (!selectors.draftSaveSuccess && !prognocis.draftSaveUrlPattern) {
+        throw new Error('Write mode requires draftSaveSuccess or draftSaveUrlPattern');
+      }
     }
     nonEmpty(prognocis.draftStatusPattern, 'prognocis.draftStatusPattern');
     nonEmpty(prognocis.editableStatusPattern, 'prognocis.editableStatusPattern');

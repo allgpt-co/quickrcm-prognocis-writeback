@@ -502,22 +502,48 @@ export class PrognocisBrowser {
     if (!complaintName) {
       throw new Error('No exact HPI complaint mapping exists for this appointment type');
     }
-    await clickInFrames(
-      this.editorPage,
-      this.selectors.hpiComplaintLookupButton,
-      'HPI complaint lookup'
-    );
-    const complaintPage = await contextPageWithVisibleSelector(
-      this.editorPage,
-      this.selectors.hpiComplaintSearchInput,
-      'HPI complaint search',
-      this.config.popupTimeoutMs
-    );
+    this.selectedHpiComplaintId = null;
+    await this.dismissTransientOverlay();
+    let complaintPage = null;
+    for (const candidate of [...this.editorPage.context().pages()].reverse()) {
+      if (candidate.isClosed()) continue;
+      if (this.config.url) {
+        try {
+          if (new URL(candidate.url()).origin !== new URL(this.config.url).origin) continue;
+        } catch { continue; }
+      }
+      if (await optionalVisibleInFrames(candidate, this.selectors.hpiComplaintSearchInput)) {
+        complaintPage = candidate;
+        break;
+      }
+    }
+    if (!complaintPage) {
+      // HPI navigation alone does not open the complaint-selection popup.
+      await clickInFrames(
+        this.editorPage, this.selectors.hpiMenu,
+        'PrognoCIS HPI menu before complaint selection',
+        { allowHiddenLegacy: true, timeout: this.config.sectionLoadTimeoutMs ?? 20_000 }
+      );
+      const lookup = await firstVisibleInSectionFrame(
+        this.editorPage, this.selectors.hpiComplaintLookupButton,
+        this.config.sectionUrlPatterns?.hpi, 'HPI binocular complaint lookup',
+        this.config.sectionLoadTimeoutMs ?? 20_000
+      );
+      await lookup.scope.waitForLoadState('domcontentloaded', {
+        timeout: this.config.sectionLoadTimeoutMs ?? 20_000
+      });
+      await lookup.locator.click();
+      complaintPage = await contextPageWithVisibleSelector(
+        this.editorPage, this.selectors.hpiComplaintSearchInput,
+        'HPI complaint search', this.config.popupTimeoutMs
+      );
+    }
     this.watchDialogs(complaintPage);
     const search = await firstVisibleInFrames(
       complaintPage,
       this.selectors.hpiComplaintSearchInput,
-      'HPI complaint search'
+      'HPI complaint search',
+      this.config.popupTimeoutMs
     );
     await fillField(search.locator, complaintName);
     if (this.selectors.hpiComplaintSearchButton) {
@@ -530,7 +556,8 @@ export class PrognocisBrowser {
     const rowsResult = await firstVisibleInFrames(
       complaintPage,
       this.selectors.hpiComplaintRows,
-      'HPI complaint results'
+      'HPI complaint results',
+      this.config.patientSearchTimeoutMs ?? 10_000
     );
     const rows = rowsResult.scope.locator(this.selectors.hpiComplaintRows);
     let matches = [];
@@ -551,24 +578,34 @@ export class PrognocisBrowser {
     const exact = requireOneMatch(matches, 'HPI complaint');
     const rawComplaintId = await exact.getAttribute(this.config.hpiComplaintIdAttribute);
     const complaintId = stableEncounterId(rawComplaintId, this.config.hpiComplaintIdPattern);
-    if (!complaintId) {
+    if (!/^[A-Za-z0-9._:-]{1,200}$/.test(complaintId)) {
       const error = new Error('Exact HPI complaint result did not expose a stable complaint ID');
       error.code = 'HPI_COMPLAINT_ID_INVALID';
       throw error;
     }
-    const alreadyActive = await valueInFrames(
-      this.editorPage,
-      this.selectors.hpiActiveComplaintId
-    ) === complaintId;
     const closes = complaintPage !== this.editorPage
       ? complaintPage.waitForEvent('close', { timeout: this.config.popupTimeoutMs }).catch(() => null)
       : null;
-    if (!alreadyActive) {
-      if (this.selectors.hpiComplaintSelectButton) {
-        await exact.locator(this.selectors.hpiComplaintSelectButton).first().click();
-      } else {
-        await exact.click();
-      }
+    // An unchecked lookup checkbox does not mean the active complaint is absent
+    // from the encounter. Re-adding it can replace that complaint's saved notes.
+    if (this.selectors.hpiComplaintCloseButton
+      && await valueInFrames(this.editorPage, this.selectors.hpiActiveComplaintId) === complaintId) {
+      await clickInFrames(complaintPage, this.selectors.hpiComplaintCloseButton,
+        'close lookup for already-active HPI complaint', { retryOnTransient: false })
+        .catch(error => { if (!complaintPage.isClosed()) throw error; });
+      if (closes && !(await closes)) throw new Error('HPI complaint lookup did not close');
+      await requireValueInFrames(this.editorPage, this.selectors.hpiActiveComplaintId,
+        complaintId, 'PrognoCIS existing HPI complaint', this.config.sectionLoadTimeoutMs ?? 10_000);
+      this.selectedHpiComplaintId = complaintId;
+      return;
+    }
+    if (this.selectors.hpiComplaintSelectButton) {
+      // check() is state-setting, unlike click(), which can uncheck an existing
+      // selection. Always ensure the exact row is selected before confirming,
+      // even if its complaint ID was already active in the HPI editor.
+      await exact.locator(this.selectors.hpiComplaintSelectButton).first().check();
+    } else {
+      await exact.click();
     }
     if (this.selectors.hpiComplaintConfirmButton) {
       await clickInFrames(
@@ -589,6 +626,7 @@ export class PrognocisBrowser {
       this.config.sectionLoadTimeoutMs ?? 10_000
     );
     this.assertNoUnexpectedDialog();
+    this.selectedHpiComplaintId = complaintId;
     return complaintId;
   }
 
@@ -629,11 +667,46 @@ export class PrognocisBrowser {
     return field.locator;
   }
 
+  async readSection(section, appointmentType, options = {}) {
+    // Open once. Recover only reads: repeating a menu click can start another
+    // navigation or trigger a legacy auto-save.
+    let field = await this.sectionField(section, appointmentType, options);
+    const deadline = Date.now() + (this.config.sectionLoadTimeoutMs ?? 10_000);
+    while (Date.now() < deadline) {
+      try {
+        if (!field) {
+          const fresh = await firstVisibleInSectionFrame(
+            this.editorPage,
+            this.selectors[`${section}Field`],
+            this.config.sectionUrlPatterns?.[section],
+            `PrognoCIS ${section} narrative field after frame reload`,
+            Math.max(1, deadline - Date.now())
+          );
+          await fresh.scope.waitForLoadState('domcontentloaded', {
+            timeout: Math.max(1, deadline - Date.now())
+          });
+          field = fresh.locator;
+        }
+        return await readField(field, { timeout: Math.max(1, deadline - Date.now()) });
+      } catch (error) {
+        if (this.editorPage.isClosed()
+          || !/execution context was destroyed|cannot find context|frame (?:was|has been) detached|frame has been detached|target page, context or browser has been closed/i.test(error.message)) {
+          throw error;
+        }
+        field = null;
+        if (Date.now() >= deadline) break;
+        await this.editorPage.waitForTimeout(Math.min(100, deadline - Date.now()));
+      }
+    }
+    throw Object.assign(new Error(`PrognoCIS ${section} frame did not stabilize for note inspection`), {
+      code: 'CLINICAL_SECTION_READ_UNSTABLE'
+    });
+  }
+
   async readSections(artifact, options = {}) {
     const values = {};
     for (const section of SECTION_NAMES) {
-      const field = await this.sectionField(section, artifact.encounter.appointmentType, options);
-      values[section] = await readField(field);
+      values[section] = await this.readSection(section, artifact.encounter.appointmentType, options);
     }
     return values;
   }
@@ -670,23 +743,42 @@ export class PrognocisBrowser {
       if (!(await field.isEditable().catch(() => false))) {
         throw new Error(`PrognoCIS ${section} narrative field is not editable`);
       }
+      if (section === 'hpi') {
+        await this.assertSelectedHpiComplaint();
+      }
       await fillField(field, artifact.sections[section]);
       if (normalizeClinicalText(await readField(field)) !== normalizeClinicalText(artifact.sections[section])) {
         throw new Error(`PrognoCIS ${section} field did not retain the approved text before save`);
       }
+      if (section === 'hpi') await this.assertSelectedHpiComplaint();
+      const save = await firstVisibleInSectionFrame(
+        this.editorPage, this.selectors[`${section}SaveButton`],
+        this.config.sectionUrlPatterns?.[section], `PrognoCIS ${section} Save`,
+        this.config.sectionLoadTimeoutMs ?? 10_000
+      );
       await waitForConfiguredSave(this.editorPage, {
-        urlPattern: this.config.sectionSaveUrlPattern,
+        urlPattern: this.config.sectionSaveUrlPatterns?.[section] ?? this.config.sectionSaveUrlPattern,
         successSelector: this.selectors.sectionSaveSuccess,
         timeoutMs: this.config.saveTimeoutMs ?? 90_000,
         label: `PrognoCIS ${section} save`
-      }, () => clickInFrames(
-        this.editorPage,
-        this.selectors[`${section}SaveButton`],
-        `PrognoCIS ${section} Save`,
-        { retryOnTransient: false }
-      ));
+      }, () => save.locator.click());
       this.assertNoUnexpectedDialog();
     }
+  }
+
+  async assertSelectedHpiComplaint() {
+    if (!this.selectedHpiComplaintId) {
+      throw Object.assign(new Error('HPI complaint must be selected and verified before entering or saving the note'), {
+        code: 'HPI_COMPLAINT_NOT_ACTIVE'
+      });
+    }
+    await requireValueInFrames(
+      this.editorPage,
+      this.selectors.hpiActiveComplaintId,
+      this.selectedHpiComplaintId,
+      'PrognoCIS selected HPI complaint',
+      this.config.sectionLoadTimeoutMs ?? 10_000
+    );
   }
 
   async encounterStatusIs(artifact, expectedEncounterId, configuredPattern) {
@@ -703,14 +795,21 @@ export class PrognocisBrowser {
   }
 
   async saveDraftAndVerifyStatus(artifact, expectedEncounterId) {
-    await waitForConfiguredSave(this.editorPage, {
-      urlPattern: this.config.draftSaveUrlPattern,
-      successSelector: this.selectors.draftSaveSuccess,
-      timeoutMs: this.config.saveTimeoutMs ?? 90_000,
-      label: 'PrognoCIS draft save'
-    }, () => clickInFrames(this.editorPage, this.selectors.saveDraftButton, 'PrognoCIS Save Draft', {
-      retryOnTransient: false
-    }));
+    // The production narrative-only flow saves each section individually.
+    // It never visits Assessment or requires another encounter-save action.
+    if (this.config.draftSaveStrategy !== 'sections-only') {
+      const save = await firstVisibleInSectionFrame(
+        this.editorPage, this.selectors.saveDraftButton,
+        this.config.draftSaveFrameUrlPattern, 'PrognoCIS Save Draft',
+        this.config.sectionLoadTimeoutMs ?? 10_000
+      );
+      await waitForConfiguredSave(this.editorPage, {
+        urlPattern: this.config.draftSaveUrlPattern,
+        successSelector: this.selectors.draftSaveSuccess,
+        timeoutMs: this.config.saveTimeoutMs ?? 90_000,
+        label: 'PrognoCIS draft save'
+      }, () => save.locator.click());
+    }
     const verified = this.selectors.encounterStatusCell
       ? await this.encounterStatusIs(artifact, expectedEncounterId, this.config.draftStatusPattern)
       : await this.statusSelectorMatches(this.config.draftStatusPattern, 'PrognoCIS draft status');

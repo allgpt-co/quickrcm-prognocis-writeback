@@ -6,6 +6,56 @@ import { artifact } from '../test-support/artifact.mjs';
 const artifacts = [artifact({ jobId: 'job-1' }), artifact({ jobId: 'job-2' })];
 const audit = { info: async () => {}, error: async () => {} };
 
+test('supervised no-ack write mode verifies drafts but never updates source or acknowledgement ledger', async () => {
+  for (const alreadyVerified of [false, true]) {
+    const events = [];
+    const result = await runWriteback({ automation: { writeEnabled: true, maxRecordsPerRun: 1 } }, {
+      source: {
+        listAttestedArtifacts: async () => [artifacts[0]],
+        revalidate: async () => events.push('revalidate'),
+        markWrittenBack: async () => assert.fail('No-ack mode must never acknowledge the source')
+      },
+      destination: {
+        process: async (_, options) => {
+          assert.equal(alreadyVerified, false, 'Verified content must not be rewritten');
+          assert.equal(options.writeEnabled, true);
+          events.push('destination');
+          return { status: 'DRAFT_VERIFIED', ehrEncounterId: 'ehr-encounter-9' };
+        }
+      },
+      ledger: {
+        has: () => alreadyVerified, isAcknowledged: () => false,
+        markVerified: async () => events.push('verified'),
+        markAcknowledged: async () => assert.fail('No-ack mode must not mark local acknowledgement')
+      }, audit
+    }, { acknowledgeSource: false });
+    assert.equal(result.mode, 'draft-write-no-ack');
+    assert.equal(result.acknowledged, 0);
+    assert.equal(result.failed, 0);
+    assert.equal(result.verified, alreadyVerified ? 0 : 1);
+    assert.equal(result.skipped, alreadyVerified ? 1 : 0);
+    assert.deepEqual(events, alreadyVerified ? ['revalidate'] : ['revalidate', 'destination', 'revalidate', 'verified']);
+  }
+});
+
+test('no-ack mode still refuses unverified destination output', async () => {
+  const result = await runWriteback({ automation: { writeEnabled: true, maxRecordsPerRun: 1 } }, {
+    source: {
+      listAttestedArtifacts: async () => [artifacts[0]], revalidate: async () => true,
+      markWrittenBack: async () => assert.fail('No acknowledgement permitted')
+    },
+    destination: { process: async () => ({ status: 'PROBED' }) },
+    ledger: {
+      has: () => false, isAcknowledged: () => false,
+      markVerified: async () => assert.fail('Unverified content must not get proof'),
+      markAcknowledged: async () => assert.fail('No acknowledgement permitted')
+    }, audit
+  }, { acknowledgeSource: false });
+  assert.equal(result.failed, 1);
+  assert.equal(result.verified, 0);
+  assert.equal(result.acknowledged, 0);
+});
+
 test('probe rechecks the API response source and never acknowledges or writes the ledger', async () => {
   const marked = [];
   const revalidated = [];

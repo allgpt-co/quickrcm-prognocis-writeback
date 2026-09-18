@@ -4,10 +4,11 @@ function jobKey(jobId) {
   return crypto.createHash('sha256').update(String(jobId)).digest('hex');
 }
 
-export async function runWriteback(config, { source, destination, ledger, audit }) {
+export async function runWriteback(config, { source, destination, ledger, audit }, { acknowledgeSource = true } = {}) {
+  if (typeof acknowledgeSource !== 'boolean') throw new Error('acknowledgeSource must be a boolean');
   const artifacts = await source.listAttestedArtifacts(config.automation.maxRecordsPerRun);
   const summary = {
-    mode: config.automation.writeEnabled ? 'draft-write' : 'probe',
+    mode: config.automation.writeEnabled ? (acknowledgeSource ? 'draft-write' : 'draft-write-no-ack') : 'probe',
     queued: artifacts.length,
     probed: 0,
     verified: 0,
@@ -39,6 +40,14 @@ export async function runWriteback(config, { source, destination, ledger, audit 
       }
       if (config.automation.writeEnabled && ledger.has(artifact.artifactHash)) {
         await source.revalidate(artifact);
+        if (!acknowledgeSource) {
+          summary.skipped += 1;
+          await audit.info('writeback_record_acknowledgement_withheld', {
+            jobKey: safeJobKey, artifactHash: artifact.artifactHash,
+            status: 'verified-unacknowledged', durationMs: Date.now() - started
+          });
+          continue;
+        }
         const acknowledgement = await source.markWrittenBack(artifact);
         await ledger.markAcknowledged({
           artifactHash: artifact.artifactHash,
@@ -89,6 +98,13 @@ export async function runWriteback(config, { source, destination, ledger, audit 
         status: result.duplicate ? 'idempotent' : 'written',
         durationMs: Date.now() - started
       });
+      if (!acknowledgeSource) {
+        await audit.info('writeback_record_acknowledgement_withheld', {
+          jobKey: safeJobKey, artifactHash: artifact.artifactHash,
+          status: 'verified-unacknowledged', durationMs: Date.now() - started
+        });
+        continue;
+      }
       const acknowledgement = await source.markWrittenBack(artifact);
       await ledger.markAcknowledged({
         artifactHash: artifact.artifactHash,

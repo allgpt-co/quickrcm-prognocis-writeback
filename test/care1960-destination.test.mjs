@@ -13,10 +13,10 @@ const sqlResponse = JSON.parse(await fs.readFile(
 
 test('migration 0010 response maps into all three Playwright fields, survives reopening, and repeats as a no-op', async () => {
   const executablePath = await resolveChromiumExecutable({
-    projectRoot: '/',
-    executablePath: '/home/hermes/.hermes/home/.cache/ms-playwright/chromium-1234/chrome-linux64/chrome'
+    projectRoot: process.cwd(),
+    executablePath: process.env.PROGNOCIS_TEST_CHROMIUM_EXECUTABLE ?? ''
   });
-  assert.ok(executablePath, 'The live Cron Chromium executable is required for browser fixtures');
+  assert.ok(executablePath, 'An installed Chromium executable is required for browser fixtures');
   const browser = await chromium.launch({ headless: true, executablePath });
   try {
     const page = await browser.newPage();
@@ -31,6 +31,7 @@ test('migration 0010 response maps into all three Playwright fields, survives re
       }
       return route.fulfill({ contentType: 'text/html', body: `
         <div id="ready">Ready</div><div id="status">Draft</div>
+        <input id="active-complaint" type="hidden" value="958">
         ${Object.keys(saved).map((section) => `
           <button id="${section}-menu">${section}</button>
           <textarea id="${section}">${saved[section]}</textarea>
@@ -45,7 +46,7 @@ test('migration 0010 response maps into all three Playwright fields, survives re
         </script>
       ` });
     });
-    const selectors = { draftStatus: '#status', saveDraftButton: '#draft-save' };
+    const selectors = { draftStatus: '#status', saveDraftButton: '#draft-save', hpiActiveComplaintId: '#active-complaint' };
     for (const section of Object.keys(saved)) {
       selectors[`${section}Menu`] = `#${section}-menu`;
       selectors[`${section}Field`] = `#${section}`;
@@ -59,7 +60,10 @@ test('migration 0010 response maps into all three Playwright fields, survives re
     // Identity navigation is covered by the existing matching/browser fixtures.
     // The actual section save, reload, inspection, and duplicate path run here.
     destination.open = async () => {};
-    destination.selectHpiComplaint = async () => '958';
+    destination.selectHpiComplaint = async () => {
+      destination.selectedHpiComplaintId = '958';
+      return '958';
+    };
     destination.selectPatient = async (patient) => {
       assert.equal(patient.prognocisPatientId, sqlResponse[0].patient.prognocis_patient_id);
       assert.equal(patient.firstName, sqlResponse[0].patient.first_name);

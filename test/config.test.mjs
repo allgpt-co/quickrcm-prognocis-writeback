@@ -85,6 +85,21 @@ function addWriteSelectors(value) {
   });
 }
 
+test('section-only write strategy needs all narrative saves and draft proof, but no extra save control', () => {
+  const value = config();
+  value.automation.writeEnabled = true;
+  addWriteSelectors(value);
+  value.prognocis.draftSaveStrategy = 'sections-only';
+  delete value.prognocis.selectors.saveDraftButton;
+  delete value.prognocis.selectors.draftSaveSuccess;
+  assert.doesNotThrow(() => validateConfigObject(value));
+  delete value.prognocis.selectors.hpiSaveButton;
+  assert.throws(() => validateConfigObject(value), /hpiSaveButton/);
+  const unknown = config();
+  unknown.prognocis.draftSaveStrategy = 'unknown';
+  assert.throws(() => validateConfigObject(unknown), /draftSaveStrategy/);
+});
+
 test('probe requires an API response source and PrognoCIS identity selectors', () => {
   assert.doesNotThrow(() => validateConfigObject(config()));
   const missingSource = config();

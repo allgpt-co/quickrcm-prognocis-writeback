@@ -90,11 +90,14 @@ export async function clickInFrames(
   throw new Error(`Visible element not found in any frame for ${label}`);
 }
 
-export async function readField(locator) {
-  const tagName = await locator.evaluate((element) => element.tagName.toLowerCase());
-  if (['input', 'textarea', 'select'].includes(tagName)) return locator.inputValue();
-  if (await locator.getAttribute('contenteditable') === 'true') return locator.innerText();
-  return locator.textContent();
+export async function readField(locator, { timeout } = {}) {
+  // Read type and content in one browser evaluation, not across a frame reload.
+  return locator.evaluate((element) => {
+    const tagName = element.tagName.toLowerCase();
+    if (['input', 'textarea', 'select'].includes(tagName)) return element.value;
+    if (element.getAttribute('contenteditable') === 'true') return element.innerText;
+    return element.textContent;
+  }, undefined, { timeout });
 }
 
 export async function fillField(locator, value) {

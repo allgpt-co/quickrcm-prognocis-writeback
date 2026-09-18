@@ -144,4 +144,5 @@ CLINICAL_WRITE_ACK=I_ACKNOWLEDGE_ATTESTED_CLINICAL_DRAFT_WRITES
 PrognoCIS uses the authenticated Chrome session through localhost CDP, with
 noVNC available for login/MFA. Run one configured probe and a supervised draft
 canary before scheduling. See [readiness](LIVE_READINESS_CHECKLIST.md),
-[architecture](docs/ARCHITECTURE.md), and [scheduling](docs/HERMES_CRON_GUIDE.md).
+[architecture](docs/ARCHITECTURE.md), and the
+[full Hermes production cron runbook](docs/HERMES_PRODUCTION_CRON_RUNBOOK.md).

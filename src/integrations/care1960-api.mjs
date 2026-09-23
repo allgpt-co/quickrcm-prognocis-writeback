@@ -84,10 +84,11 @@ export function validateCare1960SourceConfig(config) {
     if (!Number.isInteger(config.timeoutMs) || config.timeoutMs < 1 || config.timeoutMs > 60_000) {
       throw new Error('care1960.timeoutMs must be an integer from 1 to 60000');
     }
-    if (config.markWrittenBackUrl !== undefined) {
+    for (const field of ['markWrittenBackUrl', 'setRetryFailedUrl']) {
+      if (config[field] === undefined) continue;
       let acknowledgementUrl;
-      try { acknowledgementUrl = new URL(config.markWrittenBackUrl); } catch {
-        throw new Error('care1960.markWrittenBackUrl must be a valid URL');
+      try { acknowledgementUrl = new URL(config[field]); } catch {
+        throw new Error(`care1960.${field} must be a valid URL`);
       }
       const acknowledgementLocal = ['localhost', '127.0.0.1', '[::1]'].includes(acknowledgementUrl.hostname);
       if ((acknowledgementUrl.protocol !== 'https:'
@@ -95,10 +96,10 @@ export function validateCare1960SourceConfig(config) {
         || acknowledgementUrl.username || acknowledgementUrl.password
         || acknowledgementUrl.hash || acknowledgementUrl.search
         || /TODO_|YOUR-/i.test(acknowledgementUrl.href)) {
-        throw new Error('care1960.markWrittenBackUrl must use HTTPS (or loopback HTTP) without credentials, query, or fragment');
+        throw new Error(`care1960.${field} must use HTTPS (or loopback HTTP) without credentials, query, or fragment`);
       }
       if (acknowledgementUrl.origin !== url.origin) {
-        throw new Error('care1960.markWrittenBackUrl must use the same origin as care1960.apiUrl');
+        throw new Error(`care1960.${field} must use the same origin as care1960.apiUrl`);
       }
     }
   }
@@ -256,6 +257,7 @@ export class Care1960ApiSource {
   #selected = [];
   #hasMore = false;
   #acknowledgementPromises = new Map();
+  #retryFailedPromises = new Map();
 
   constructor(config, { apiKey = '', bearerToken = '' } = {}, { fetchImpl = fetch } = {}) {
     this.config = structuredClone(validateCare1960SourceConfig(config));
@@ -385,6 +387,59 @@ export class Care1960ApiSource {
     const request = this.#postMarkWrittenBack(scribeJobId);
     this.#acknowledgementPromises.set(artifact.artifactHash, request);
     return request;
+  }
+
+  async markRetryFailed(artifact) {
+    await this.revalidate(artifact);
+    if (this.config.input !== 'http' || !isText(this.config.setRetryFailedUrl)) {
+      throw failure('CARE1960_RETRY_FAILED_CONFIG_INVALID', 'Care1960 retry-failed endpoint is required');
+    }
+    if (!isText(this.apiKey) || !isText(this.bearerToken)) {
+      throw failure('CARE1960_AUTH_REQUIRED', 'Care1960 gateway API key and separate tenant bearer token are required');
+    }
+    const prefix = `${this.config.orgId.toLowerCase()}:`;
+    const scribeJobId = artifact.jobId.slice(prefix.length);
+    if (!artifact.jobId.startsWith(prefix)
+      || !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(scribeJobId)) {
+      throw failure('CARE1960_RETRY_FAILED_INVALID', 'Care1960 retry-failed job identity is invalid');
+    }
+    if (!this.#retryFailedPromises.has(artifact.artifactHash)) {
+      this.#retryFailedPromises.set(artifact.artifactHash, this.#postRetryFailed(scribeJobId));
+    }
+    return this.#retryFailedPromises.get(artifact.artifactHash);
+  }
+
+  async #postRetryFailed(scribeJobId) {
+    let response;
+    try {
+      response = await this.fetch(this.config.setRetryFailedUrl, {
+        method: 'POST', redirect: 'error', cache: 'no-store',
+        signal: AbortSignal.timeout(this.config.timeoutMs),
+        headers: {
+          apikey: this.apiKey,
+          Authorization: `Bearer ${this.bearerToken}`,
+          Accept: 'application/json',
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ p_scribe_job_id: scribeJobId, p_retry_failed: true })
+      });
+    } catch {
+      throw failure('CARE1960_RETRY_FAILED_UNAVAILABLE', 'Care1960 retry-failed POST failed; no automatic retry was attempted');
+    }
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => {});
+      throw failure(`CARE1960_RETRY_FAILED_HTTP_${response.status}`, `Care1960 retry-failed POST returned HTTP ${response.status}`);
+    }
+    let payload;
+    try { payload = await readResponseJson(response); } catch {
+      throw failure('CARE1960_RETRY_FAILED_INVALID', 'Care1960 retry-failed response could not be validated');
+    }
+    const row = Array.isArray(payload) && payload.length === 1 ? payload[0] : null;
+    if (!isObject(row) || row.scribe_job_id !== scribeJobId || row.retry_failed !== true
+      || !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(String(row.clinical_export_id ?? ''))) {
+      throw failure('CARE1960_RETRY_FAILED_INVALID', 'Care1960 retry-failed response did not prove the exact row was flagged');
+    }
+    return { scribeJobId, clinicalExportId: row.clinical_export_id, retryFailed: true };
   }
 
   async #postMarkWrittenBack(scribeJobId) {

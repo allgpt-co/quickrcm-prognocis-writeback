@@ -11,7 +11,16 @@ const sqlResponse = JSON.parse(await fs.readFile(
   new URL('../test-support/fixtures/care1960-0010-response.json', import.meta.url)
 ));
 
-test('migration 0010 response maps into all three Playwright fields, survives reopening, and repeats as a no-op', async () => {
+for (const scenario of [
+  { name: 'full narratives', note: sqlResponse[0].note },
+  { name: 'placeholder narratives', note: { hpi: sqlResponse[0].note.hpi, ros: 'Not documented', physical_examination: 'Not documented' } },
+  { name: 'null and blank sections', note: { hpi: sqlResponse[0].note.hpi, ros: null, physical_examination: ' \n\t ' } },
+  { name: 'all sections empty', note: { hpi: null, ros: '', physical_examination: null } },
+  { name: 'heading-only sections', note: { hpi: '## HPI', ros: 'ROS:', physical_examination: 'Physical Examination:' } }
+]) {
+test(`${scenario.name} survive Playwright save/read-back, replay without writes, and preserve conflicting EHR text`, async () => {
+  const response = structuredClone(sqlResponse);
+  response[0].note = scenario.note;
   const executablePath = await resolveChromiumExecutable({
     projectRoot: process.cwd(),
     executablePath: process.env.PROGNOCIS_TEST_CHROMIUM_EXECUTABLE ?? ''
@@ -76,24 +85,31 @@ test('migration 0010 response maps into all three Playwright fields, survives re
     };
     destination.readDiagnoses = async () => assert.fail('Care1960 must not visit the diagnosis UI');
     destination.addDiagnosis = async () => assert.fail('Care1960 must not write diagnoses');
-    const [artifact] = artifactsFromApiResponse(sqlResponse, { orgId: sqlResponse[0].org_id });
+    const [artifact] = artifactsFromApiResponse(response, { orgId: sqlResponse[0].org_id });
+    const populated = Object.keys(saved).filter((section) => artifact.sections[section] !== '');
+    const expectedWrites = populated.length ? [...populated, 'draft'] : [];
     const first = await destination.process(artifact, { writeEnabled: true });
     assert.equal(first.status, 'DRAFT_VERIFIED');
-    assert.equal(first.duplicate, false);
+    assert.equal(first.duplicate, populated.length === 0);
     assert.deepEqual(saved, artifact.sections);
     assert.deepEqual(saved, {
-      hpi: sqlResponse[0].note.hpi,
-      ros: sqlResponse[0].note.ros,
-      physicalExamination: sqlResponse[0].note.physical_examination
+      hpi: scenario.note.hpi?.trim() ?? '',
+      ros: scenario.note.ros?.trim() ?? '',
+      physicalExamination: scenario.note.physical_examination?.trim() ?? ''
     });
-    assert.deepEqual(writes, ['hpi', 'ros', 'physicalExamination', 'draft']);
+    assert.deepEqual(writes, expectedWrites);
     const second = await destination.process(artifact, { writeEnabled: true });
     assert.equal(second.duplicate, true);
-    assert.equal(writes.length, 4);
-    const changed = buildClinicalArtifact({ ...artifact, sections: { ...artifact.sections, ros: 'Different reviewed ROS.' } });
-    await assert.rejects(destination.process(changed, { writeEnabled: true }), /refusing overwrite/);
-    assert.equal(writes.length, 4);
+    assert.deepEqual(writes, expectedWrites);
+    saved.ros = 'Existing clinician ROS must be preserved.';
+    for (const incoming of [null, 'Not documented', 'Different reviewed ROS.']) {
+      const changed = buildClinicalArtifact({ ...artifact, sections: { ...artifact.sections, ros: incoming } });
+      await assert.rejects(destination.process(changed, { writeEnabled: true }), /refusing overwrite/);
+      assert.deepEqual(writes, expectedWrites);
+      assert.equal(saved.ros, 'Existing clinician ROS must be preserved.');
+    }
   } finally {
     await browser.close();
   }
 });
+}

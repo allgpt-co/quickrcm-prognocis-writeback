@@ -36,7 +36,7 @@ test('rejects any content changed after the producer generated its hash', () => 
   assert.throws(() => validateClinicalArtifact(changed), /hash does not match/i);
 });
 
-test('rejects a directly supplied clinical section containing only placeholders', () => {
+test('preserves attested placeholder text and still rejects subsequent content changes', () => {
   const base = artifact();
   const value = artifact({
     sections: {
@@ -44,7 +44,9 @@ test('rejects a directly supplied clinical section containing only placeholders'
       ros: '- Constitutional: Not documented.\n- Respiratory: Not documented.'
     }
   });
-  assert.throws(() => validateClinicalArtifact(value), /sections\.ros.*placeholder-only/i);
+  assert.equal(validateClinicalArtifact(value).sections.ros, value.sections.ros);
+  value.sections.ros = 'Normal findings invented after attestation.';
+  assert.throws(() => validateClinicalArtifact(value), /hash does not match/i);
 });
 
 test('canonical hash treats an omitted optional provider as null', () => {

@@ -135,9 +135,12 @@ export function artifactsFromApiResponse(response, config) {
     const jobId = `${config.orgId.toLowerCase()}:${read('jobId').trim()}`;
     if (seen.has(jobId)) throw failure('CARE1960_DUPLICATE_RECORD', 'Care1960 response contains a duplicate clinical job');
     seen.add(jobId);
-    if (['hpi', 'ros', 'physicalExamination'].some((name) => !isText(read(name)))) {
+    // All three keys identify the clinical API contract. Their values may be
+    // null or empty under migration 0023; missing keys still reject HPI-only
+    // frozen exports and incorrect field mappings.
+    if (['hpi', 'ros', 'physicalExamination'].some((name) => read(name) === undefined)) {
       throw failure('CARE1960_SECTIONS_MISSING',
-        'Care1960 response must include HPI, ROS, and Physical Examination; sync metadata or HPI-only output cannot be written');
+        'Care1960 response must include HPI, ROS, and Physical Examination fields; values may be text or null');
     }
     try {
       return buildClinicalArtifact({
@@ -166,7 +169,7 @@ export function artifactsFromApiResponse(response, config) {
     } catch {
       // Validation may process PHI; expose only a controlled error at the API boundary.
       throw failure('CARE1960_RECORD_INVALID',
-        'Care1960 record requires ATTESTED status, attestation, patient name/DOB, appointment date, and substantive clinical sections');
+        'Care1960 record requires ATTESTED status, attestation, patient name/DOB, appointment date, and narrative fields containing text or null within size limits');
     }
   });
 }

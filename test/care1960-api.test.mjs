@@ -115,7 +115,7 @@ test('rejects sync-only, HPI-only, unapproved, wrong-tenant, ambiguous, or ident
     (value) => { value.appointment.prognocis_appointment_id = ''; },
     (value) => { value.patient.date_of_birth = '2026-02-30'; },
     (value) => { value.appointment.starts_at = '2026-09-16T15:30:00'; },
-    (value) => { value.note.ros = 'Not documented.'; }
+    (value) => { value.note.ros = 123; }
   ]) {
     const value = record();
     edit(value);
@@ -123,6 +123,29 @@ test('rejects sync-only, HPI-only, unapproved, wrong-tenant, ambiguous, or ident
   }
   assert.throws(() => artifactsFromApiResponse(record(), { ...fileConfig, orgId: '99999999-9999-4999-8999-999999999999' }), { code: 'CARE1960_ORG_MISMATCH' });
   assert.throws(() => artifactsFromApiResponse([record(), record()], fileConfig), { code: 'CARE1960_DUPLICATE_RECORD' });
+});
+
+test('migration 0023 section values pass API mapping while missing fields and wrong types still fail', () => {
+  const mappings = { hpi: 'hpi', ros: 'ros', physical_examination: 'physicalExamination' };
+  for (const [field, section] of Object.entries(mappings)) {
+    for (const text of [null, '', ' \t\n ', 'Not documented', '## Physical Examination']) {
+      const response = record();
+      response.note[field] = text;
+      const [value] = artifactsFromApiResponse(response, fileConfig);
+      assert.equal(validateClinicalArtifact(value).sections[section], text?.trim() ?? '');
+    }
+    const missing = record();
+    delete missing.note[field];
+    assert.throws(() => artifactsFromApiResponse(missing, fileConfig), { code: 'CARE1960_SECTIONS_MISSING' });
+    for (const invalid of [1, true, [], {}, 'x'.repeat(200_001)]) {
+      const response = record();
+      response.note[field] = invalid;
+      assert.throws(() => artifactsFromApiResponse(response, fileConfig), { code: 'CARE1960_RECORD_INVALID' });
+    }
+  }
+  const allNull = record();
+  allNull.note = { hpi: null, ros: null, physical_examination: null };
+  assert.deepEqual(artifactsFromApiResponse(allNull, fileConfig)[0].sections, { hpi: '', ros: '', physicalExamination: '' });
 });
 
 test('response files are reread and changed content prevents recording verification', async (t) => {

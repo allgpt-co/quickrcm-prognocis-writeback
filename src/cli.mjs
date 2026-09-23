@@ -12,6 +12,7 @@ import { AuditLogger } from './runtime/audit.mjs';
 import { loadConfig } from './runtime/config.mjs';
 import { acquireRunLock } from './runtime/lock.mjs';
 import { VerificationLedger } from './runtime/ledger.mjs';
+import { RetryLedger } from './runtime/retry-ledger.mjs';
 import { runWriteback } from './workflow/writeback.mjs';
 
 function parseArgs(argv) {
@@ -80,27 +81,37 @@ async function main() {
     await audit.init();
     // Reject invalid API responses before opening or interacting with the EHR.
     await source.load();
-    await closeStaleLoginTargets(config.browser.cdpEndpoint, config.prognocis.loginUrl);
-    context = await openBrowser(config.browser);
-    const destinationPage = await portalPage(context, config.prognocis.url);
-    const destination = new PrognocisBrowser(
-      destinationPage,
-      config.prognocis,
-      config.automation,
-      {
-        username: config.secrets.prognocisUsername,
-        password: config.secrets.prognocisPassword
+    let browserDestination;
+    const destination = {
+      async prepare() {
+        if (browserDestination) return;
+        await closeStaleLoginTargets(config.browser.cdpEndpoint, config.prognocis.loginUrl);
+        context ??= await openBrowser(config.browser);
+        const destinationPage = await portalPage(context, config.prognocis.url);
+        browserDestination = new PrognocisBrowser(
+          destinationPage, config.prognocis, config.automation,
+          { username: config.secrets.prognocisUsername, password: config.secrets.prognocisPassword }
+        );
+      },
+      process(artifact, options) {
+        return browserDestination.process(artifact, options);
       }
-    );
+    };
     const ledger = new VerificationLedger(config.runtime.ledgerFile);
     await ledger.init();
-    const summary = await runWriteback(config, { source, destination, ledger, audit }, {
+    let retryLedger;
+    if (config.automation.writeEnabled && !args.noAcknowledge
+      && config.care1960.input === 'http' && config.automation.maxRetries !== undefined) {
+      retryLedger = new RetryLedger(config.runtime.retryLedgerFile);
+      await retryLedger.init();
+    }
+    const summary = await runWriteback(config, { source, destination, ledger, retryLedger, audit }, {
       acknowledgeSource: !args.noAcknowledge
     });
     // A supervised no-ack run must not consume a page or advance its cursor.
     if (args.command === 'run' && !args.noAcknowledge && summary.failed === 0) await source.commitCursor();
     process.stdout.write(`${JSON.stringify(summary)}\n`);
-    if (summary.failed > 0) process.exitCode = 1;
+    if (summary.failed > 0 || summary.retryFailed > 0) process.exitCode = 1;
   } finally {
     if (context) await closeBrowser(context).catch(() => {});
     await releaseLock();

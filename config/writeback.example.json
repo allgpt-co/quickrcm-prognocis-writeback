@@ -3,7 +3,8 @@
     "timezone": "America/Chicago",
     "writeEnabled": false,
     "draftOnly": true,
-    "maxRecordsPerRun": 10
+    "maxRecordsPerRun": 10,
+    "maxRetries": 2
   },
   "browser": {
     "cdpEndpoint": "http://127.0.0.1:9223",
@@ -22,7 +23,8 @@
     "requestFile": ".runtime/care1960-request.json",
     "timeoutMs": 30000,
     "recordsPath": "",
-    "fields": {}
+    "fields": {},
+    "setRetryFailedUrl": "http://127.0.0.1:54321/rest/v1/rpc/care1960_set_clinical_export_retry_failed"
   },
   "prognocis": {
     "url": "https://gulfbank.prognocis.com/prognocis/scrMasterFrame.jsp",
@@ -94,6 +96,7 @@
   "runtime": {
     "lockFile": ".runtime/writeback.lock",
     "auditFile": ".runtime/writeback-audit.jsonl",
-    "ledgerFile": ".runtime/verified-drafts.jsonl"
+    "ledgerFile": ".runtime/verified-drafts.jsonl",
+    "retryLedgerFile": ".runtime/writeback-retries.json"
   }
 }

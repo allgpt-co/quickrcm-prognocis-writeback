@@ -6,6 +6,7 @@ import path from 'node:path';
 import http from 'node:http';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { createHash } from 'node:crypto';
 import {
   Care1960ApiSource,
   artifactsFromApiResponse,
@@ -13,6 +14,8 @@ import {
 } from '../src/integrations/care1960-api.mjs';
 import { validateClinicalArtifact } from '../src/domain/clinical-artifact.mjs';
 import { runWriteback } from '../src/workflow/writeback.mjs';
+import { RetryLedger } from '../src/runtime/retry-ledger.mjs';
+import { WRITE_ACKNOWLEDGEMENT } from '../src/runtime/config.mjs';
 
 const example = JSON.parse(await fs.readFile(new URL('../config/care1960-response.example.json', import.meta.url)));
 const fileConfig = { input: 'response-file', responseFile: 'unused.json', orgId: example.org_id };
@@ -473,7 +476,8 @@ test('CLI rejects incomplete API output before connecting to the EHR and release
   config.runtime = {
     lockFile: path.join(directory, 'run.lock'),
     auditFile: path.join(directory, 'audit.jsonl'),
-    ledgerFile: path.join(directory, 'ledger.jsonl')
+    ledgerFile: path.join(directory, 'ledger.jsonl'),
+    retryLedgerFile: path.join(directory, 'retries.json')
   };
   const configFile = path.join(directory, 'config.json');
   await fs.writeFile(configFile, JSON.stringify(config));
@@ -483,4 +487,152 @@ test('CLI rejects incomplete API output before connecting to the EHR and release
     return true;
   });
   await assert.rejects(fs.access(config.runtime.lockFile), { code: 'ENOENT' });
+});
+
+test('retry-failed RPC sends exact authenticated payload and validates the matching export', async (t) => {
+  const { requestFile } = await files(t);
+  const requests = [];
+  const apiUrl = await server(t, (req, res) => {
+    let body = '';
+    req.on('data', (chunk) => { body += chunk; });
+    req.on('end', () => {
+      requests.push({ method: req.method, headers: req.headers, body: JSON.parse(body) });
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify(req.url.endsWith('/retry_failed') ? [{
+        scribe_job_id: example.scribe_job_id,
+        clinical_export_id: '44444444-4444-4444-8444-444444444444', retry_failed: true
+      }] : [record()]));
+    });
+  });
+  const source = new Care1960ApiSource({
+    ...fileConfig, input: 'http', requestFile, apiUrl, timeoutMs: 1000,
+    setRetryFailedUrl: apiUrl.replace('/clinical_response', '/retry_failed')
+  }, { apiKey: 'synthetic-key', bearerToken: 'synthetic-tenant-jwt' });
+  const [artifact] = await source.listAttestedArtifacts(1);
+  for (let repeat = 0; repeat < 2; repeat += 1) {
+    assert.deepEqual(await source.markRetryFailed(artifact), {
+      scribeJobId: example.scribe_job_id,
+      clinicalExportId: '44444444-4444-4444-8444-444444444444', retryFailed: true
+    });
+  }
+  assert.equal(requests.length, 2, 'At most one flag POST per source instance');
+  assert.equal(requests[1].method, 'POST');
+  assert.equal(requests[1].headers.apikey, 'synthetic-key');
+  assert.equal(requests[1].headers.authorization, 'Bearer synthetic-tenant-jwt');
+  assert.deepEqual(requests[1].body, { p_scribe_job_id: example.scribe_job_id, p_retry_failed: true });
+});
+
+test('retry-failed RPC refuses ambiguous responses, HTTP errors and redirects without an inline replay', async (t) => {
+  const { requestFile } = await files(t);
+  const valid = { scribe_job_id: example.scribe_job_id,
+    clinical_export_id: '44444444-4444-4444-8444-444444444444', retry_failed: true };
+  const cases = [
+    { payload: [] }, { payload: valid }, { payload: [valid, valid] },
+    { payload: [{ ...valid, retry_failed: false }] },
+    { payload: [{ ...valid, retry_failed: 'true' }] },
+    { payload: [{ ...valid, scribe_job_id: '55555555-5555-4555-8555-555555555555' }] },
+    { payload: [{ ...valid, clinical_export_id: 'invalid' }] },
+    { raw: 'SECRET_PATIENT_RESPONSE' },
+    { status: 401 }, { status: 403 }, { status: 500 }, { status: 307 }, { network: true }
+  ];
+  for (const scenario of cases) {
+    let flagCalls = 0;
+    const apiUrl = 'https://api.example.test/read';
+    const source = new Care1960ApiSource({
+      ...fileConfig, input: 'http', requestFile, apiUrl, timeoutMs: 1000,
+      setRetryFailedUrl: 'https://api.example.test/retry_failed'
+    }, { apiKey: 'synthetic-key', bearerToken: 'synthetic-tenant-jwt' }, {
+      fetchImpl: async (url, options) => {
+        if (url === apiUrl) return new Response(JSON.stringify([record()]));
+        flagCalls += 1;
+        assert.equal(options.redirect, 'error');
+        assert.equal(options.cache, 'no-store');
+        assert.ok(options.signal);
+        if (scenario.network) throw new Error('SECRET_PATIENT_RESPONSE');
+        return new Response(scenario.raw ?? JSON.stringify(scenario.payload), { status: scenario.status ?? 200 });
+      }
+    });
+    const [artifact] = await source.listAttestedArtifacts(1);
+    for (let repeat = 0; repeat < 2; repeat += 1) {
+      await assert.rejects(source.markRetryFailed(artifact), (error) => {
+        assert.match(error.code, /^CARE1960_RETRY_FAILED_/);
+        assert.doesNotMatch(error.message, /SECRET|PATIENT|synthetic-key/);
+        return true;
+      });
+    }
+    assert.equal(flagCalls, 1);
+  }
+});
+
+test('CLI retires an exhausted HTTP record and advances its cursor without connecting to the EHR', async (t) => {
+  const { directory, requestFile } = await files(t);
+  const updates = [];
+  let removed = false;
+  const apiUrl = await server(t, (req, res) => {
+    let body = '';
+    req.on('data', (chunk) => { body += chunk; });
+    req.on('end', () => {
+      res.setHeader('Content-Type', 'application/json');
+      const common = { scribe_job_id: example.scribe_job_id,
+        clinical_export_id: '44444444-4444-4444-8444-444444444444' };
+      if (req.url.endsWith('/retry_failed')) {
+        updates.push(JSON.parse(body));
+        res.end(JSON.stringify([{ ...common, retry_failed: true }]));
+      } else if (req.url.endsWith('/written_back')) {
+        updates.push(JSON.parse(body));
+        removed = true;
+        res.end(JSON.stringify([{ ...common, written_back: true, written_back_at: '2026-09-23T12:00:00Z' }]));
+      } else res.end(JSON.stringify(removed ? [] : [record()]));
+    });
+  });
+  const config = JSON.parse(await fs.readFile(new URL('../config/writeback.example.json', import.meta.url)));
+  config.automation.writeEnabled = true;
+  config.care1960 = {
+    ...fileConfig, input: 'http', requestFile, apiUrl, timeoutMs: 2000,
+    setRetryFailedUrl: apiUrl.replace('/clinical_response', '/retry_failed'),
+    markWrittenBackUrl: apiUrl.replace('/clinical_response', '/written_back'),
+    cursorFile: path.join(directory, 'cursor.json')
+  };
+  config.browser.cdpEndpoint = 'http://127.0.0.1:9';
+  for (const name of Object.keys(config.prognocis.selectors)) {
+    config.prognocis.selectors[name] = config.prognocis.selectors[name].replace(/^TODO_.*/, '#unused');
+  }
+  config.prognocis.selectors.encounterProviderCell = '#provider';
+  config.prognocis.selectors.sectionSaveSuccess = '#saved';
+  config.prognocis.selectors.draftSaveSuccess = '#draft-saved';
+  config.runtime = {
+    lockFile: path.join(directory, 'run.lock'), auditFile: path.join(directory, 'audit.jsonl'),
+    ledgerFile: path.join(directory, 'verified.jsonl'), retryLedgerFile: path.join(directory, 'retries.json')
+  };
+  const retryLedger = new RetryLedger(config.runtime.retryLedgerFile);
+  await retryLedger.init();
+  const jobKey = createHash('sha256').update(`${example.org_id}:${example.scribe_job_id}`).digest('hex');
+  for (let attempt = 0; attempt < 3; attempt += 1) await retryLedger.beginAttempt(jobKey, 3);
+  const configFile = path.join(directory, 'config.json');
+  await fs.writeFile(configFile, JSON.stringify(config));
+  const args = ['src/cli.mjs', 'run', '--config', configFile];
+  const options = { env: {
+    ...process.env, SUPABASE_ANON_KEY: 'synthetic-key', SUPABASE_TENANT_API_KEY: 'synthetic-tenant-jwt',
+    CLINICAL_WRITE_ACK: WRITE_ACKNOWLEDGEMENT
+  } };
+  await assert.rejects(promisify(execFile)(process.execPath, args, options), (error) => {
+    assert.equal(error.code, 1, 'Retired failures still signal an operational failure');
+    assert.equal(error.stderr, '');
+    const summary = JSON.parse(error.stdout.trim().split('\n').at(-1));
+    assert.equal(summary.retryFailed, 1);
+    assert.equal(summary.failed, 0);
+    assert.equal(summary.verified, 0);
+    return true;
+  });
+  assert.deepEqual(updates, [
+    { p_scribe_job_id: example.scribe_job_id, p_retry_failed: true },
+    { p_scribe_job_id: example.scribe_job_id, p_written_back: true }
+  ]);
+  const cursor = JSON.parse(await fs.readFile(config.care1960.cursorFile, 'utf8'));
+  assert.equal(cursor.scribeJobId, example.scribe_job_id);
+  assert.equal(await fs.readFile(config.runtime.ledgerFile, 'utf8'), '');
+  await assert.rejects(fs.access(config.runtime.lockFile), { code: 'ENOENT' });
+  const { stdout } = await promisify(execFile)(process.execPath, args, options);
+  assert.equal(JSON.parse(stdout.trim().split('\n').at(-1)).queued, 0);
+  assert.equal(updates.length, 2);
 });

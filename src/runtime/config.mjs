@@ -140,6 +140,20 @@ export function validateConfigObject(config) {
     || automation.maxRecordsPerRun < 1 || automation.maxRecordsPerRun > 100) {
     throw new Error('automation.maxRecordsPerRun must be an integer from 1 to 100');
   }
+  if (automation.maxRetries !== undefined) {
+    if (!Number.isInteger(automation.maxRetries) || automation.maxRetries < 0 || automation.maxRetries > 2) {
+      throw new Error('automation.maxRetries must be an integer from 0 to 2 (retries after the initial attempt)');
+    }
+    nonEmpty(runtime.retryLedgerFile, 'runtime.retryLedgerFile');
+    for (const field of ['ledgerFile', 'auditFile', 'lockFile']) {
+      if (runtime[field] && path.resolve(PROJECT_ROOT, runtime[field]) === path.resolve(PROJECT_ROOT, runtime.retryLedgerFile)) {
+        throw new Error('runtime.retryLedgerFile must be separate from the verification ledger, audit, and lock');
+      }
+    }
+    if (config.care1960.input === 'http') {
+      nonEmpty(config.care1960.setRetryFailedUrl, 'care1960.setRetryFailedUrl');
+    }
+  }
   try {
     new Intl.DateTimeFormat('en-US', { timeZone: automation.timezone }).format();
   } catch {
@@ -237,6 +251,9 @@ export async function loadConfig(
     config.runtime.lockFile = path.resolve(PROJECT_ROOT, config.runtime.lockFile);
     config.runtime.auditFile = path.resolve(PROJECT_ROOT, config.runtime.auditFile);
     config.runtime.ledgerFile = path.resolve(PROJECT_ROOT, config.runtime.ledgerFile);
+    if (config.runtime.retryLedgerFile) {
+      config.runtime.retryLedgerFile = path.resolve(PROJECT_ROOT, config.runtime.retryLedgerFile);
+    }
   }
   for (const key of ['responseFile', 'requestFile', 'cursorFile']) {
     if (config.care1960[key]) config.care1960[key] = path.resolve(PROJECT_ROOT, config.care1960[key]);

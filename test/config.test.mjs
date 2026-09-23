@@ -190,6 +190,34 @@ test('configuration refuses sign, finalize, and placeholder selectors', () => {
   assert.throws(() => validateConfigObject(placeholder), /placeholder/i);
 });
 
+test('bounded retries require a private separate state path and the retry-failed RPC in HTTP mode', () => {
+  const value = config();
+  value.automation.maxRetries = 2;
+  assert.throws(() => validateConfigObject(value), /retryLedgerFile/);
+  value.runtime.retryLedgerFile = '.runtime/retries.json';
+  assert.doesNotThrow(() => validateConfigObject(value));
+  for (const maxRetries of [-1, 3, 1.5, '2', null]) {
+    assert.throws(() => validateConfigObject({ ...value, automation: { ...value.automation, maxRetries } }), /maxRetries/);
+  }
+  for (const field of ['ledgerFile', 'auditFile', 'lockFile']) {
+    assert.throws(() => validateConfigObject({
+      ...value, runtime: { ...value.runtime, retryLedgerFile: value.runtime[field] }
+    }), /must be separate/);
+  }
+  value.care1960 = {
+    ...value.care1960, input: 'http', apiUrl: 'https://api.example.test/read',
+    requestFile: '.runtime/request.json', timeoutMs: 1000
+  };
+  assert.throws(() => validateConfigObject(value), /setRetryFailedUrl/);
+  value.care1960.setRetryFailedUrl = 'https://api.example.test/retry_failed';
+  assert.doesNotThrow(() => validateConfigObject(value));
+  for (const url of ['https://different.example.test/retry_failed', 'http://api.example.test/retry_failed',
+    'https://user:pass@api.example.test/retry_failed', 'https://api.example.test/retry_failed?key=secret']) {
+    value.care1960.setRetryFailedUrl = url;
+    assert.throws(() => validateConfigObject(value), /setRetryFailedUrl/);
+  }
+});
+
 test('CDP control endpoint must remain local to the automation server', () => {
   const value = config();
   value.browser.cdpEndpoint = 'https://public.example.test:9223';

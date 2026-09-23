@@ -128,9 +128,9 @@ are measured in UTF-16 units to match JavaScript validation.
 | `appointment.provider_name` | Optional string, up to 300 characters | Provider name matching PrognoCIS; omit or use `null` if unavailable. |
 | `attestation.attested_at` | ISO 8601 timestamp with timezone | Actual time of provider attestation. |
 | `attestation.attested_by` | Non-empty string, up to 100 characters | Stable ID of the user who attested the note. |
-| `note.hpi` | Non-empty string, up to 200,000 characters | Attested History of Present Illness narrative. |
-| `note.ros` | Non-empty string, up to 200,000 characters | Attested Review of Systems narrative. |
-| `note.physical_examination` | Non-empty string, up to 200,000 characters | Attested Physical Examination / physical assessment narrative. |
+| `note.hpi` | Required key; string up to 200,000 UTF-16 units or null | Attested History of Present Illness narrative; may be blank or placeholder text. |
+| `note.ros` | Required key; string up to 200,000 UTF-16 units or null | Attested Review of Systems narrative; may be blank or placeholder text. |
+| `note.physical_examination` | Required key; string up to 200,000 UTF-16 units or null | Attested Physical Examination narrative; may be blank or placeholder text. |
 
 Do not substitute Supabase patient or appointment UUIDs for the corresponding
 `prognocis_*` identifiers. Do not fabricate missing encounter IDs or attestation
@@ -147,8 +147,11 @@ Timestamps may use UTC (`2026-09-16T15:30:00Z`) or an explicit offset
 3. Patient, appointment, encounter, job, and attestation must belong to the same
    clinical record and authorized organization.
 4. Return the reviewed text without generating findings or converting missing
-   information into normal findings. Blank or placeholder-only sections such as
-   `Not documented` are rejected by the writer.
+   information into normal findings. Following migration `0023`, null, blank,
+   heading-only, and placeholder-only sections such as `Not documented` are
+   accepted. Null becomes an empty narrative and outer whitespace is trimmed;
+   placeholder wording is preserved. Empty source sections never erase existing
+   destination text; different existing text remains a conflict.
 5. `status` describes clinical attestation. An appointment sync result such as
    `CREATED`, or an export queue status such as `READY`, does not replace it.
 6. An existing frozen `HPI_NARRATIVE` export cannot be presented as proof of a
@@ -216,8 +219,10 @@ The local content hash and ledger track the writer's verified destination result
 - An ineligible or absent record returns `[]` without invented findings or writes.
 - A captured response passes `npm run validate:response` using the actual
   organization and configured JSON paths.
-- Responses missing any clinical section, attestation, patient ID, or encounter
-  ID are rejected before the writer opens PrognoCIS.
+- Responses missing any clinical section key, attestation, or required patient
+  identity metadata are rejected before the writer opens PrognoCIS. Explicit null
+  or blank section values are accepted. An optional PrognoCIS encounter ID may be
+  null; the destination still requires an unambiguous encounter match.
 - A configured probe selects exactly one matching patient and encounter.
 - A supervised draft write saves HPI, ROS, and Physical Examination into their
   respective fields and verifies them after reopening the encounter.

@@ -43,6 +43,14 @@ Paths are resolved relative to each selected record. Numeric path segments can
 select an array element. Overrides select fields, not literal fallback values.
 The source does not invent attestation, identity, or clinical findings.
 
+The three narrative keys must be present. Migration `0023` allows their values
+to be null, blank, heading-only, or placeholder text such as `Not documented`.
+The writer accepts those values, trims outer whitespace as before, and normalizes
+null to an empty string for EHR comparison. Values must otherwise be strings of
+at most 200,000 UTF-16 units. Placeholder text is copied as supplied. Empty source
+sections match empty destination fields without a save; different existing EHR
+text still raises a conflict and is never cleared to match a blank source.
+
 | Field | Default path |
 |---|---|
 | `orgId` | `org_id` |
@@ -90,8 +98,10 @@ array shape, microsecond timestamps, and extra attestation provenance fields.
 In `../1960pacare/Supabase_Applications/care1960`, migration
 `0010_care1960_attested_clinical_api.sql` implements the clinical read RPC.
 It reads all three sections from `attestation.note_version`, checks the complete
-reviewed note's hash and frozen identity/attestation proof, and excludes
-incomplete or changed records. It returns `[]` when no eligible record exists.
+reviewed note's hash and frozen identity/attestation proof, and excludes records
+with invalid identity or inconsistent source proof. Migration `0023` relaxes the
+section-content checks to allow null, blank, heading-only, and placeholder values
+within the size limit. It returns `[]` when no eligible record exists.
 
 The RPC is read-only, including for POST. It does not update appointments or
 mark an export delivered. Migration `0005`'s appointment-upsert response is

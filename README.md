@@ -77,8 +77,8 @@ instance after applying the migration there. Copy the [request example](config/c
 to `.runtime/care1960-request.json` and replace its synthetic identifiers with
 the exact patient, encounter, and clinical job to process.
 
-Both credentials are required in `.env`: `CARE1960_API_KEY` supplies the Supabase
-instance's gateway anon key in `apikey`; `CARE1960_BEARER_TOKEN` supplies a
+Both credentials are required in `.env`: `SUPABASE_ANON_KEY` supplies the Supabase
+instance's gateway anon key in `apikey`; `SUPABASE_TENANT_API_KEY` supplies a
 registered, live Care1960 tenant API JWT in `Authorization`. Use credentials
 from the same backend instance. There is no fallback between the two.
 
@@ -88,14 +88,55 @@ retry timeouts, follow redirects, or repeat the POST during writeback checks.
 RPC reads attested records without updating appointment or export state.
 
 The file source is reread before/after EHR writes. HTTP mode checks the captured
-response; it does not query current upstream state or acknowledge an export to
-Supabase. Completion proof is local to this writer.
+response rather than fetching current upstream state. In normal write mode,
+verified drafts are acknowledged through `care1960.markWrittenBackUrl`; local
+verification proof allows a later run to recover a failed acknowledgement
+without rewriting the EHR.
 
-Use an exact-job request for the first canary. The writer does not advance the
-API's pagination cursor. A fixed first-page request repeatedly returns the same
-records, even after the local ledger verifies them. Keep `p_limit` within the
-writer's record limit; a batch scheduler must reconcile each page's results
-before advancing its cursor.
+Use an exact-job request for the first canary. The fetch RPC excludes records
+marked `written_back=true`, so a first-page queue request moves on after successful
+acknowledgement or failure retirement. Keep `p_limit` within the writer's record
+limit. If `care1960.cursorFile` is configured, the cursor advances only after all
+selected records are resolved; probe and no-ack runs never advance it.
+
+## Bounded retries
+
+Set `automation.maxRetries: 2`, `runtime.retryLedgerFile` to
+`.runtime/writeback-retries.json`, and `care1960.setRetryFailedUrl` to the
+same backend's `/rest/v1/rpc/care1960_set_clinical_export_retry_failed` endpoint.
+The live configuration and example include these settings. The retry RPC uses
+the same gateway key and tenant bearer token as the read and acknowledgement RPCs.
+
+Each job receives an initial attempt and up to two retries across normal HTTP
+write runs, one attempt per run. The private retry file persists the count before
+EHR processing, including across process restarts; an interrupted attempt counts.
+The key includes the organization and scribe job, so note edits do not reset it.
+Preserve this file across deployments and use the same exclusive worker lock.
+Counts start when this feature is enabled; historical audit failures are not
+imported into the budget.
+
+On the third failure, the writer first sets `retry_failed=true` and validates the
+returned job/export. It then sets `written_back=true` and records local retirement.
+The failed record leaves the queue, allowing subsequent records to proceed. With
+a one-record request, the next job is fetched on the next scheduled invocation.
+Both flags being true means retries were exhausted; it does not mean the EHR draft
+was successfully written. Retired jobs never receive successful verification proof.
+
+If either RPC fails, the exhausted job retries only the retirement RPCs on a later
+run, always failure flag first. It never spends another EHR attempt. Successfully
+verified drafts recover acknowledgement separately and are not flagged as failed
+because their acknowledgement RPC was unavailable. Browser startup, explicit
+authentication failures, and source-load validation failures do not consume the
+clinical retry budget. Probe, file input, and `--no-acknowledge` do not count attempts
+or retire jobs.
+
+The summary's `failed` count is unresolved records; `retryFailed` is records retired
+as failures during that invocation. Either count makes the worker exit with status
+1, so a retired failure remains visible in cron logs. A resolved page can advance
+its cursor even when it includes retired failures. Local retirement also prevents
+stale responses from replaying exhausted jobs. Any deliberate manual requeue must
+reconcile both upstream flags and the corresponding local retry state while the
+worker is stopped.
 
 ## Response fields
 
@@ -120,19 +161,30 @@ and the live PrognoCIS canary still require verification.
 
 ## Destination behavior
 
-All three sections, attestation, and retained PrognoCIS patient/encounter IDs are
-required. Missing or placeholder-only findings are rejected. Physical assessment
-maps to Physical Examination, never the separate Assessment section. No diagnosis
+All three section keys and attestation/identity metadata are required. Following
+Care1960 migration `0023`, section values may be strings or null, including blank,
+heading-only, or placeholder text such as `Not documented`. The writer preserves
+supplied text with its existing outer-whitespace trimming and treats null as an
+empty narrative. It never fills missing findings with generated text. Missing keys,
+non-string/non-null values, and values exceeding 200,000 UTF-16 units are rejected.
+An empty source section leaves an empty EHR field untouched; any different existing
+EHR text still stops the record, including when the source is blank or a placeholder.
+All three resulting fields and draft status must match on read-back before normal
+acknowledgement. Physical assessment maps to Physical Examination, never the
+separate Assessment section. No diagnosis
 codes, symptom checkboxes, signing, finalization, or claims actions are performed.
 Existing different text stops the record. Existing identical text is a no-op.
 
-Before entering HPI, the writer opens the HPI menu, searches the complaint
-lookup for the configured `hpiComplaintName` (`Wellness exam`), selects only one
-exact matching row, and verifies its active complaint ID. The checkbox is
-checked rather than toggled. The same active ID is checked again immediately
-before filling HPI and before saving it. Read-back reselects the same complaint
-to verify the correct HPI narrative slot. Missing, ambiguous, or inactive
-complaint selection stops the write. Probe mode never selects a complaint.
+Before entering HPI, the writer opens the HPI menu and finds the configured
+`hpiComplaintName` (`Wellness exam`). With the captured encounter-list selectors,
+it matches the exact complaint name, binds its checkbox to the same row's stable
+ID, activates the narrative by clicking the name, and ensures that row's
+chief-complaint checkbox is checked. Checkbox indexes are not hardcoded, and
+other complaint checkboxes are preserved. The lookup is used only when the
+complaint is absent. Both the active ID and checkbox are checked again before
+filling and saving HPI. Read-back reselects the same complaint to verify the
+correct narrative slot. Missing, ambiguous, inactive, or unchecked selection
+stops the write. Probe mode never selects a complaint.
 See [the Wellness Exam flow](docs/PROGNOCIS_WELLNESS_HPI_FLOW.md).
 
 Draft writes retain the existing configuration gate:

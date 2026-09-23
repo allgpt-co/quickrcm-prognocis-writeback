@@ -11,8 +11,10 @@ export function credentialsFromEnvironment(environment = process.env) {
   return {
     care1960ApiKey: environment.SUPABASE_ANON_KEY ?? '',
     care1960BearerToken: environment.SUPABASE_TENANT_API_KEY ?? '',
-    prognocisUsername: environment.prognosis_username ?? '',
-    prognocisPassword: environment.prognosis_password ?? '',
+    // Accept the documented uppercase names; retain the lowercase aliases for
+    // compatibility with older private environments.
+    prognocisUsername: environment.prognosis_username ?? environment.PROGNOCIS_USERNAME ?? '',
+    prognocisPassword: environment.prognosis_password ?? environment.PROGNOCIS_PASSWORD ?? '',
     writeAck: environment.CLINICAL_WRITE_ACK ?? ''
   };
 }

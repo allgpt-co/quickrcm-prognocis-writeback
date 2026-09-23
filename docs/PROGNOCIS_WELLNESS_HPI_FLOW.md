@@ -11,16 +11,22 @@ withholds the Care1960 update and API cursor advancement.
 
 1. Search by first and last name and validate the matching patient, including DOB.
 2. Open the matching existing encounter and verify it is editable.
-3. Explicitly open the HPI menu before opening the complaint lookup.
-4. Search for `Wellness exam`, using `prognocis.hpiComplaintName` for every
-   appointment type.
-5. Require exactly one visible, exact-name matching complaint row. Similar names
-   or multiple matches must not be chosen automatically.
-6. Extract that row's stable complaint ID and check its selection checkbox.
-   Checking preserves an already-checked selection; clicking could toggle it off.
-7. Confirm the selection and require the HPI editor's active complaint ID to match.
-8. Recheck that ID immediately before entering the attested HPI narrative and
-   again before saving. Preserve the existing clinical-text conflict check.
+3. Explicitly open the HPI menu before inspecting or adding complaints.
+4. Find `Wellness exam` in the encounter's HPI complaint list, using
+   `prognocis.hpiComplaintName` for every appointment type. Match the exact name
+   after normalizing case/whitespace and removing PrognoCIS's leading checkmark.
+5. Require exactly one matching row. Bind its name cell and checkbox to the same
+   row index, and read its stable ID from that index's `msCategoryId` hidden field.
+   Never hardcode a positional checkbox such as `#ccomplaint1`.
+6. If the complaint is absent, use the binocular lookup, search for the exact name,
+   check the unique result, and confirm. Then find its encounter row and require
+   its ID to equal the lookup result's ID. Do not re-add an existing complaint.
+7. Click the encounter complaint's name cell if its narrative is not active.
+   Reacquire the row after the frame reloads and verify the active complaint ID.
+   Check only that row's chief-complaint checkbox; preserve all other checkboxes.
+8. Recheck both the complaint ID and its checkbox immediately before entering the
+   attested HPI narrative and again before saving. Preserve the existing
+   clinical-text conflict check.
 9. Save a draft only, reopen the exact encounter, select the same Wellness Exam
    complaint, and verify the retained HPI narrative in that complaint's field.
 
@@ -30,6 +36,32 @@ and `process()`. Complaint-selection failure must stop HPI entry, not fall back
 to another complaint, a free-text match, or a different note slot.
 
 ## Live selector configuration
+
+### Encounter complaint checkbox (captured from the user demonstration, 2026-09-23)
+
+The demonstrated control was `#ccomplaint1`; the preceding row used
+`#ccomplaint0`. These suffixes are row indexes, not stable complaint identities.
+The automation therefore resolves the exact complaint row again after navigation.
+
+The checkbox's `handleCCB(index)` handler sets `mbChiefCmp` and marks the form
+changed. It does **not** change `#msCurrentComplaintId`. The name cell's
+`onSelectCompl(index)` handler activates the narrative through a
+`CHANGE_COMPLAINT` form submission. Both activation and the checked state are
+required before HPI entry. Merely ticking the demonstrated checkbox does not
+prove that the HPI textarea belongs to Wellness exam.
+
+| Control | Selector or binding |
+| --- | --- |
+| Encounter complaint rows | `tr:has(> td[id^="CompName"])` |
+| Name/activation cell within row | `td[id^="CompName"]` |
+| Chief-complaint checkbox within row | `input[type="checkbox"][id^="ccomplaint"]` |
+| Stable ID for the matched row | `input[name="maComplaintList[{index}].msCategoryId"]` |
+
+The name cell's `CompNameN` and checkbox's `ccomplaintN` must have the same
+index. The ID field is read in the same HPI frame. Missing, duplicated, or
+inconsistent controls stop the run. Existing configurations without this optional
+selector group retain the earlier lookup-only behavior; the active production
+configuration includes the group.
 
 ### Wellness exam / HPI (captured with Playwright MCP, 2026-09-18)
 
@@ -123,3 +155,8 @@ confirmation that fails to activate the complaint, already-active checked and
 unchecked choices, an active-ID change that blocks HPI entry, and a real popup
 selection that unlocks HPI and retains the saved narrative after a fresh reopen.
 These tests are not a production EHR canary.
+
+Encounter-list regression tests also cover Wellness exam above or below a similar
+complaint, row reordering during a real iframe navigation, preserving other
+checkboxes and saved narrative text, duplicate exact rows, missing-row lookup,
+and rejection when the active ID or chief-complaint checkbox changes.

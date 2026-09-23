@@ -113,6 +113,25 @@ test('probe requires an API response source and PrognoCIS identity selectors', (
   assert.doesNotThrow(() => validateConfigObject(withoutRetainedPatientId));
 });
 
+test('encounter complaint selectors must be complete and bind the checkbox index to its complaint ID', () => {
+  const value = config();
+  Object.assign(value.prognocis.selectors, {
+    hpiEncounterComplaintRows: 'tr:has(> td[id^="CompName"])',
+    hpiEncounterComplaintNameCell: 'td[id^="CompName"]',
+    hpiEncounterComplaintCheckbox: 'input[type="checkbox"][id^="ccomplaint"]',
+    hpiEncounterComplaintIdField: 'input[name="maComplaintList[{index}].msCategoryId"]'
+  });
+  assert.doesNotThrow(() => validateConfigObject(value));
+  for (const key of ['hpiEncounterComplaintRows', 'hpiEncounterComplaintNameCell',
+    'hpiEncounterComplaintCheckbox', 'hpiEncounterComplaintIdField']) {
+    const incomplete = structuredClone(value);
+    delete incomplete.prognocis.selectors[key];
+    assert.throws(() => validateConfigObject(incomplete), new RegExp(key));
+  }
+  value.prognocis.selectors.hpiEncounterComplaintIdField = 'input[name="maComplaintList[1].msCategoryId"]';
+  assert.throws(() => validateConfigObject(value), /\{index\}/);
+});
+
 test('write mode requires all three clinical sections and draft proof without diagnosis selectors', () => {
   const value = config();
   value.automation.writeEnabled = true;

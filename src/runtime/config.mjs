@@ -101,6 +101,16 @@ function validatePrognocis(config) {
     'activePatientIdentity', 'encounterMenu', 'encounterRows', 'encounterDateCell',
     'encounterTypeCell', 'encounterIdAttribute', 'encounterEditorReady'
   ]);
+  const encounterComplaintSelectors = [
+    'hpiEncounterComplaintRows', 'hpiEncounterComplaintNameCell',
+    'hpiEncounterComplaintCheckbox', 'hpiEncounterComplaintIdField'
+  ];
+  if (encounterComplaintSelectors.some((key) => selectors[key] !== undefined)) {
+    requiredSelectors(selectors, 'prognocis', encounterComplaintSelectors);
+    if (!selectors.hpiEncounterComplaintIdField.includes('{index}')) {
+      throw new Error('prognocis.selectors.hpiEncounterComplaintIdField must bind the checkbox row using {index}');
+    }
+  }
   for (const key of Object.keys(selectors)) {
     if (/sign|finali[sz]e|submitClaim/i.test(key)) {
       throw new Error(`Clinical write-back must not configure a signing/finalization selector: ${key}`);

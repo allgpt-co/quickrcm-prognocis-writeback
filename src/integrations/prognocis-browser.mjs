@@ -25,6 +25,12 @@ function normalize(value) {
   return String(value ?? '').normalize('NFKC').toLowerCase().replace(/\s+/g, ' ').trim();
 }
 
+function complaintNamePattern(value) {
+  // PrognoCIS decorates an encounter's complaint name with a leading checkmark.
+  const name = normalize(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/ /g, '\\s+');
+  return new RegExp(`^\\s*(?:[✓✔]\\s*)?${name}\\s*$`, 'iu');
+}
+
 function stableEncounterId(rawValue, configuredPattern) {
   const raw = String(rawValue ?? '').trim();
   if (!raw) return '';
@@ -496,6 +502,89 @@ export class PrognocisBrowser {
     this.assertNoUnexpectedDialog();
   }
 
+  async findEncounterHpiComplaint(complaintName, expectedId) {
+    const { scope } = await firstVisibleInSectionFrame(
+      this.editorPage, this.selectors.hpiComplaintLookupButton,
+      this.config.sectionUrlPatterns?.hpi, 'HPI encounter complaint controls',
+      this.config.sectionLoadTimeoutMs ?? 10_000
+    );
+    await scope.waitForLoadState('domcontentloaded');
+    // Keep the locator bound to the exact name, not nth(row), even if rows move
+    // between inspection and the subsequent click/check action.
+    const row = scope.locator(this.selectors.hpiEncounterComplaintRows).filter({
+      has: scope.locator(this.selectors.hpiEncounterComplaintNameCell)
+        .filter({ hasText: complaintNamePattern(complaintName) })
+    });
+    const count = await row.count();
+    if (count === 0) return null;
+    if (count !== 1) {
+      throw new Error(`PrognoCIS returned ${count} exact encounter HPI complaint matches; expected one`);
+    }
+    if (!(await row.isVisible())) return null;
+    const nameCell = row.locator(this.selectors.hpiEncounterComplaintNameCell);
+    if (await nameCell.count() !== 1) {
+      throw new Error('Exact encounter HPI complaint must have one name/activation cell');
+    }
+    const checkbox = row.locator(this.selectors.hpiEncounterComplaintCheckbox);
+    if (await checkbox.count() !== 1) {
+      throw new Error('Exact encounter HPI complaint must have one chief-complaint checkbox');
+    }
+    const index = (await checkbox.getAttribute('id'))?.match(/^ccomplaint(\d+)$/)?.[1];
+    if (index === undefined || await nameCell.getAttribute('id') !== `CompName${index}`) {
+      throw new Error('Encounter HPI complaint name and checkbox do not identify the same row');
+    }
+    const idField = scope.locator(this.selectors.hpiEncounterComplaintIdField.replace('{index}', index));
+    const complaintId = await idField.count() === 1 ? (await idField.inputValue()).trim() : '';
+    if (!/^[A-Za-z0-9._:-]{1,200}$/.test(complaintId)
+      || (expectedId !== undefined && complaintId !== expectedId)) {
+      throw Object.assign(new Error('Encounter HPI complaint ID is missing or does not match the selected complaint'), {
+        code: 'HPI_COMPLAINT_ID_INVALID'
+      });
+    }
+    return { scope, nameCell, checkbox, complaintId };
+  }
+
+  async activateEncounterHpiComplaint(complaintName, expectedId) {
+    const addedDeadline = Date.now() + (this.config.sectionLoadTimeoutMs ?? 10_000);
+    let selected;
+    do {
+      selected = await this.findEncounterHpiComplaint(complaintName, expectedId);
+      if (selected) break;
+      // Lookup can close before the encounter frame has finished adding the row.
+      await this.editorPage.waitForTimeout(100);
+    } while (Date.now() < addedDeadline);
+    if (!selected) throw new Error('Selected complaint is missing from the HPI encounter complaint list');
+    const complaintId = selected.complaintId;
+    const activeId = () => selected.scope.locator(this.selectors.hpiActiveComplaintId).inputValue();
+    if (await activeId() !== complaintId) {
+      // The checkbox only sets mbChiefCmp. The name cell activates the narrative.
+      await selected.nameCell.click();
+    }
+    const deadline = Date.now() + (this.config.sectionLoadTimeoutMs ?? 10_000);
+    let active = false;
+    do {
+      // Activation reloads HPI; reacquire the exact row instead of retaining its index.
+      selected = await this.findEncounterHpiComplaint(complaintName, complaintId);
+      if (selected && await activeId() === complaintId) {
+        active = true;
+        break;
+      }
+      await this.editorPage.waitForTimeout(100);
+    } while (Date.now() < deadline);
+    if (!active) {
+      throw Object.assign(new Error('Exact encounter HPI complaint did not become active'), {
+        code: 'HPI_COMPLAINT_NOT_ACTIVE'
+      });
+    }
+    // Set the demonstrated chief-complaint checkbox without toggling other rows.
+    await selected.checkbox.check();
+    this.assertNoUnexpectedDialog();
+    this.selectedHpiComplaintName = complaintName;
+    this.selectedHpiComplaintId = complaintId;
+    await this.assertSelectedHpiComplaint();
+    return complaintId;
+  }
+
   async selectHpiComplaint(appointmentType) {
     const complaintName = this.config.hpiComplaintName
       ?? this.config.hpiComplaintByAppointmentType?.[appointmentType];
@@ -503,6 +592,7 @@ export class PrognocisBrowser {
       throw new Error('No exact HPI complaint mapping exists for this appointment type');
     }
     this.selectedHpiComplaintId = null;
+    this.selectedHpiComplaintName = null;
     await this.dismissTransientOverlay();
     let complaintPage = null;
     for (const candidate of [...this.editorPage.context().pages()].reverse()) {
@@ -532,6 +622,10 @@ export class PrognocisBrowser {
       await lookup.scope.waitForLoadState('domcontentloaded', {
         timeout: this.config.sectionLoadTimeoutMs ?? 20_000
       });
+      if (this.selectors.hpiEncounterComplaintRows
+        && await this.findEncounterHpiComplaint(complaintName)) {
+        return this.activateEncounterHpiComplaint(complaintName);
+      }
       await lookup.locator.click();
       complaintPage = await contextPageWithVisibleSelector(
         this.editorPage, this.selectors.hpiComplaintSearchInput,
@@ -588,12 +682,22 @@ export class PrognocisBrowser {
       : null;
     // An unchecked lookup checkbox does not mean the active complaint is absent
     // from the encounter. Re-adding it can replace that complaint's saved notes.
+    const existingComplaint = this.selectors.hpiEncounterComplaintRows
+      ? await this.findEncounterHpiComplaint(complaintName, complaintId)
+      : null;
+    if (existingComplaint && !this.selectors.hpiComplaintCloseButton) {
+      throw new Error('Existing HPI complaint must be preserved; configure the complaint lookup close control');
+    }
     if (this.selectors.hpiComplaintCloseButton
-      && await valueInFrames(this.editorPage, this.selectors.hpiActiveComplaintId) === complaintId) {
+      && (existingComplaint
+        || await valueInFrames(this.editorPage, this.selectors.hpiActiveComplaintId) === complaintId)) {
       await clickInFrames(complaintPage, this.selectors.hpiComplaintCloseButton,
         'close lookup for already-active HPI complaint', { retryOnTransient: false })
         .catch(error => { if (!complaintPage.isClosed()) throw error; });
       if (closes && !(await closes)) throw new Error('HPI complaint lookup did not close');
+      if (this.selectors.hpiEncounterComplaintRows) {
+        return this.activateEncounterHpiComplaint(complaintName, complaintId);
+      }
       await requireValueInFrames(this.editorPage, this.selectors.hpiActiveComplaintId,
         complaintId, 'PrognoCIS existing HPI complaint', this.config.sectionLoadTimeoutMs ?? 10_000);
       this.selectedHpiComplaintId = complaintId;
@@ -617,6 +721,9 @@ export class PrognocisBrowser {
     }
     if (complaintPage !== this.editorPage && !complaintPage.isClosed() && !(await closes)) {
       throw new Error('PrognoCIS HPI complaint search did not close after exact selection');
+    }
+    if (this.selectors.hpiEncounterComplaintRows) {
+      return this.activateEncounterHpiComplaint(complaintName, complaintId);
     }
     await requireValueInFrames(
       this.editorPage,
@@ -771,6 +878,23 @@ export class PrognocisBrowser {
       throw Object.assign(new Error('HPI complaint must be selected and verified before entering or saving the note'), {
         code: 'HPI_COMPLAINT_NOT_ACTIVE'
       });
+    }
+    if (this.selectors.hpiEncounterComplaintRows) {
+      const selected = await this.findEncounterHpiComplaint(
+        this.selectedHpiComplaintName, this.selectedHpiComplaintId
+      );
+      if (!selected
+        || await selected.scope.locator(this.selectors.hpiActiveComplaintId).inputValue() !== this.selectedHpiComplaintId) {
+        throw Object.assign(new Error('The exact selected encounter HPI complaint is no longer active'), {
+          code: 'HPI_COMPLAINT_NOT_ACTIVE'
+        });
+      }
+      if (!(await selected.checkbox.isChecked())) {
+        throw Object.assign(new Error('The exact selected encounter HPI complaint checkbox is not checked'), {
+          code: 'HPI_COMPLAINT_NOT_CHECKED'
+        });
+      }
+      return;
     }
     await requireValueInFrames(
       this.editorPage,

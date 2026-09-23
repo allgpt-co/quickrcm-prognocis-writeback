@@ -29,6 +29,60 @@ PrognoCIS selectors in `config/writeback.json`. The example organization and
 response file contain synthetic data. Active configuration, credentials, and
 runtime payloads are ignored by Git.
 
+## Docker Compose (container runtime)
+
+The Compose file runs the existing single-container architecture: Node worker,
+headless Chromium, and CDP stay inside ONE container (CDP bound to
+`127.0.0.1:9223`, never published to the host). It is a single-shot batch job —
+`restart: "no"`, no web server, no exposed ports. An external scheduler invokes
+the job; nothing runs cron inside the container.
+
+```bash
+# 1. Build the image.
+docker compose build
+
+# 2. Prepare the runtime inputs (neither enters the image):
+cp .env.example .env                          # fill in the secrets
+cp config/writeback.example.json config/writeback.json  # set orgId + selectors
+
+# 3. Run the production writeback job. The exit status is the job's exit code.
+docker compose run --rm writeback
+```
+
+- `.env` is injected at run time (`env_file`) and never baked into the image.
+- `config/` is mounted read-only at `/app/config`; a missing
+  `config/writeback.json` fails cleanly inside the app (exit 1).
+- `.runtime/` persists in the `writeback_runtime` named volume (browser
+  profile, lock/audit/ledger, verification proof) across job runs.
+- Hardened image filesystem: the root filesystem is read-only at run time;
+  only `/app/.runtime` (named volume), `/tmp`, and `/home/node` (both tmpfs,
+  the home mounted uid=1000,gid=1000 for the non-root node user) are writable.
+  `no-new-privileges` is enabled, container logs are rotated (json-file
+  driver, 10m x 3), and memory/pids are capped from measured runtime values
+  (2g, 512). Chromium needs a writable `$HOME` for its crashpad database; if
+  the `/home/node` tmpfs had root:root default ownership Chromium would abort
+  at startup — it stays owned by uid=1000.
+- Logs: `docker compose logs writeback`; status of a finished job:
+  `docker compose ps -a`.
+- Stop/clean: `docker compose stop` ends the job gracefully (the entrypoint
+  stops Chromium); `docker compose down` removes the container and network but
+  KEEPS the named volume. `docker compose down -v` also deletes the volume, so
+  the browser profile and local verification proof are destroyed — use it only
+  deliberately.
+- A non-interactive scheduler should add `-T`:
+  `docker compose run --rm -T writeback`.
+
+> **Production scheduler transition (planned, NOT active).** The Hermes cron
+> job (`care1960-prognocis-clinical-drafts`, installed by
+> `scripts/install-hermes-cron.sh`) still runs the host-based wrapper
+> (`exec node src/cli.mjs run --config config/writeback.json`). The Docker
+> equivalent — `scripts/writeback-wrapper.docker.template.sh` →
+> `docker compose run --rm -T writeback` — exists as a template only and is
+> not wired into any scheduler. Do NOT switch the scheduler until the manual
+> validation checklist in
+> [docs/DOCKER_PRODUCTION_TRANSITION.md](docs/DOCKER_PRODUCTION_TRANSITION.md)
+> has passed.
+
 ## Input from an existing API response
 
 Save the POST response privately as `.runtime/care1960-response.json`. The
@@ -77,8 +131,8 @@ instance after applying the migration there. Copy the [request example](config/c
 to `.runtime/care1960-request.json` and replace its synthetic identifiers with
 the exact patient, encounter, and clinical job to process.
 
-Both credentials are required in `.env`: `CARE1960_API_KEY` supplies the Supabase
-instance's gateway anon key in `apikey`; `CARE1960_BEARER_TOKEN` supplies a
+Both credentials are required in `.env`: `SUPABASE_ANON_KEY` supplies the Supabase
+instance's gateway anon key in `apikey`; `SUPABASE_TENANT_API_KEY` supplies a
 registered, live Care1960 tenant API JWT in `Authorization`. Use credentials
 from the same backend instance. There is no fallback between the two.
 

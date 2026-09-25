@@ -50,9 +50,9 @@ job UUID. The organization is derived from verified credentials, not a body fiel
 
 Both private environment variables are required:
 
-- `CARE1960_API_KEY`: the intended Supabase instance's anon gateway key, sent
+- `SUPABASE_ANON_KEY`: the intended Supabase instance's anon gateway key, sent
   as `apikey`.
-- `CARE1960_BEARER_TOKEN`: a registered, live Care1960 tenant API JWT from that
+- `SUPABASE_TENANT_API_KEY`: a registered, live Care1960 tenant API JWT from that
   same instance, sent as `Authorization: Bearer ...`.
 
 There is no fallback between credentials. Human doctor tokens and unscoped

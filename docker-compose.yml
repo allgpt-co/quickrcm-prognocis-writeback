@@ -1,0 +1,108 @@
+# docker-compose.yml — production runtime wiring
+#
+# Single-container architecture, unchanged from the image: the Node worker,
+# the headless Chromium, and CDP remain inside ONE container. The entrypoint
+# launches Chromium with CDP bound to 127.0.0.1:9223 (loopback only) and the
+# application attaches via chromium.connectOverCDP() at that same address.
+# No separate Chromium container, no service hostnames, no CDP endpoint changes.
+#
+# This application is a single-shot batch/cron worker:
+#   - restart: "no"            the job runs once; the exit code IS the signal
+#   - init: true               container-init reaps orphans and forwards stop
+#                              signals to the entrypoint (clean Chromium stop)
+#   - no ports, no EXPOSE      CDP stays inside the container; nothing is
+#                              reachable from the host
+#   - no healthcheck           a batch worker has no long-running liveness;
+#                              the process exit code is the health signal
+#   - read_only: true          image filesystem is immutable at run time; only
+#                              the named volume and the tmpfs mounts are
+#                              writable (chromium requires a writable $HOME —
+#                              /home/node — and a scratch /tmp, both tmpfs)
+#   - tmpfs ownership          /home/node is mounted uid=1000,gid=1000 (the
+#                              non-root node user); a plain tmpfs inherits the
+#                              layered directory's root:root 0755 and Chromium
+#                              aborts when it cannot create its crashpad
+#                              database under $HOME
+#   - no-new-privileges        blocks setuid/setgid privilege escalation
+#   - bounded logs             json-file rotation keeps host disk bounded
+#   - no cron                  an external scheduler invokes the job
+#                              (docker compose run --rm writeback)
+#
+# Secrets (.env) and active configuration (config/writeback.json) are supplied
+# at run time only; both are excluded from the build context by .dockerignore
+# and are never baked into the image. Persistent state (.runtime/) lives in the
+# named writeback_runtime volume.
+
+name: care1960-prognocis-writeback
+
+services:
+  writeback:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: care1960-prognocis-writeback:latest
+
+    # Single-shot batch worker: never restarted, never kept alive.
+    restart: "no"
+    init: true
+
+    # Hardening: immutable image filesystem, tmpfs scratch, no privilege
+    # escalation, bounded log rotation. Chromium needs a writable $HOME
+    # (crashpad database) and scratch dir; both are tmpfs. The /home/node
+    # tmpfs must be owned by the non-root user (uid=1000,gid=1000) — a default
+    # tmpfs inherits the image directory's root:root 0755 and Chromium aborts
+    # at startup. The named volume (below) is the only persistent write path.
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /home/node:uid=1000,gid=1000,mode=700
+    security_opt:
+      - no-new-privileges:true
+
+    # Resource limits from measurement (Phase 4, composition:
+    # entrypoint + Chromium headless held at CDP-wait steady state):
+    #   mem: 186-188 MiB RSS after browser startup
+    #   pids: 19 processes / ~146 threads (docker stats PIDs = threads)
+    # Limits are ~10x the measured idle memory (a real EHR page load adds
+    # renderer processes and working set) and ~3.5x the measured thread count;
+    # they only trip on a genuine runaway, never normal operation.
+    mem_limit: 2g
+    pids_limit: 512
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    # Runtime secrets/environment. Values live in the untracked host file .env
+    # (see .env.example); docker compose config prints only the file name, and
+    # the image never contains .env.
+    env_file:
+      - .env
+
+    volumes:
+      # Active configuration: read-only bind of the config/ directory. A file
+      # bind of config/writeback.json alone would make a missing config a Docker
+      # mount error before the container starts; a directory bind keeps the file
+      # optional, so a missing writeback.json fails cleanly inside the app
+      # ("Configuration not found ...", exit 1) — a normal runtime condition.
+      # config/writeback.json, when present, is therefore mounted read-only.
+      - ./config:/app/config:ro
+
+      # Persistent browser profile + application runtime state: the named
+      # volume keeps .runtime/ (chromium profile, lock/audit/ledger, verification
+      # proof) across job runs. /app/.runtime is created node:node in the image
+      # so Docker's volume-init hands the fresh volume to the non-root user.
+      - writeback_runtime:/app/.runtime
+
+    # Production batch invocation. The image default CMD is `probe` (write-
+    # protected validation); the scheduled writeback job uses the `run`
+    # subcommand with the mounted config. The entrypoint normalizes this to
+    # the preserved production invocation:
+    #   node src/cli.mjs run --config config/writeback.json
+    command: ["run", "--config", "config/writeback.json"]
+
+volumes:
+  # Persistent runtime state; survives `docker compose down` (removed only by
+  # an explicit `docker compose down -v`).
+  writeback_runtime:

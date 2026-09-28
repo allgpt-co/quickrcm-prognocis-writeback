@@ -15,8 +15,8 @@ After applying Care1960 migration `0010` to the intended backend, use:
 POST http://127.0.0.1:54321/rest/v1/rpc/care1960_get_attested_clinical_records
 ```
 
-For another instance, replace the base URL. Set `CARE1960_API_KEY` to that
-instance's gateway anon key and `CARE1960_BEARER_TOKEN` to its registered, live
+For another instance, replace the base URL. Set `SUPABASE_ANON_KEY` to that
+instance's gateway anon key and `SUPABASE_TENANT_API_KEY` to its registered, live
 Care1960 tenant API JWT. Both are required; the tenant token is separate from
 the gateway key. The RPC derives the organization from authenticated claims.
 

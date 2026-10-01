@@ -28,7 +28,7 @@
 #   - no cron                  an external scheduler invokes the job
 #                              (docker compose run --rm writeback)
 #
-# Secrets (.env) and active configuration (config/writeback.json) are supplied
+# Secrets (Coolify environment variables) and active configuration are supplied
 # at run time only; both are excluded from the build context by .dockerignore
 # and are never baked into the image. Persistent state (.runtime/) lives in the
 # named writeback_runtime volume.
@@ -37,10 +37,9 @@ name: care1960-prognocis-writeback
 
 services:
   writeback:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: care1960-prognocis-writeback:latest
+    # GitHub Actions builds and pushes this image; Coolify only pulls it.
+    image: 557690613141.dkr.ecr.us-east-1.amazonaws.com/allgpt-co/quickrcm-prognocis-writeback:latest
+    pull_policy: always
 
     # Single-shot batch worker: never restarted, never kept alive.
     restart: "no"
@@ -74,20 +73,25 @@ services:
         max-size: "10m"
         max-file: "3"
 
-    # Runtime secrets/environment. Values live in the untracked host file .env
-    # (see .env.example); docker compose config prints only the file name, and
-    # the image never contains .env.
-    env_file:
-      - .env
+    # Set these in Coolify's Environment Variables (or a local .env).
+    # Never print resolved Compose configuration: it contains these secrets.
+    environment:
+      SUPABASE_ANON_KEY: ${SUPABASE_ANON_KEY}
+      SUPABASE_TENANT_API_KEY: ${SUPABASE_TENANT_API_KEY}
+      PROGNOCIS_USERNAME: ${PROGNOCIS_USERNAME}
+      PROGNOCIS_PASSWORD: ${PROGNOCIS_PASSWORD}
+      CLINICAL_WRITE_ACK: ${CLINICAL_WRITE_ACK}
 
     volumes:
-      # Active configuration: read-only bind of the config/ directory. A file
-      # bind of config/writeback.json alone would make a missing config a Docker
-      # mount error before the container starts; a directory bind keeps the file
-      # optional, so a missing writeback.json fails cleanly inside the app
-      # ("Configuration not found ...", exit 1) — a normal runtime condition.
-      # config/writeback.json, when present, is therefore mounted read-only.
-      - ./config:/app/config:ro
+      # Supply this file on the deployment server. For a pasted Coolify stack,
+      # create/populate its file mount through Coolify before deployment.
+      # The file must be readable by container uid 1000. Never commit its data.
+      - type: bind
+        source: ./config/writeback.json
+        target: /app/config/writeback.json
+        read_only: true
+        bind:
+          create_host_path: false
 
       # Persistent browser profile + application runtime state: the named
       # volume keeps .runtime/ (chromium profile, lock/audit/ledger, verification

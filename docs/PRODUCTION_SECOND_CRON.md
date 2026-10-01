@@ -22,10 +22,10 @@ Fill `.env` privately with the same production instance's gateway anon key and
 registered tenant JWT:
 
 ```dotenv
-CARE1960_API_KEY=<production gateway anon key>
-CARE1960_BEARER_TOKEN=<registered production Care1960 tenant JWT>
-PROGNOCIS_USERNAME=
-PROGNOCIS_PASSWORD=
+SUPABASE_ANON_KEY=<production gateway anon key>
+SUPABASE_TENANT_API_KEY=<registered production Care1960 tenant JWT>
+prognosis_username=
+prognosis_password=
 CLINICAL_WRITE_ACK=
 ```
 
@@ -116,3 +116,12 @@ only after every destination result, including partials, is reconciled.
 - `200` with `[]`: no matching eligible three-section attested record.
 - `400`: invalid filters, missing pairs, UUID, or timestamp.
 - Repeated records: expected without cursor-aware batch scheduling.
+
+## Docker transition (planned, NOT active)
+
+The Hermes job above still executes the host-based wrapper
+(`exec node src/cli.mjs run --config config/writeback.json`). A containerized
+equivalent exists as a template only — `scripts/writeback-wrapper.docker.template.sh`
+→ `docker compose run --rm -T writeback` — and is **not** scheduled. Do not
+switch the scheduler until the manual validation checklist in
+[DOCKER_PRODUCTION_TRANSITION.md](DOCKER_PRODUCTION_TRANSITION.md) has passed.

@@ -1,0 +1,110 @@
+# docker-compose.yml — production runtime wiring
+#
+# Single-container architecture, unchanged from the image: the Node worker,
+# the headless Chromium, and CDP remain inside ONE container. The entrypoint
+# launches Chromium with CDP bound to 127.0.0.1:9223 (loopback only) and the
+# application attaches via chromium.connectOverCDP() at that same address.
+# No separate Chromium container, no service hostnames, no CDP endpoint changes.
+#
+# This application is a single-shot batch/cron worker:
+#   - restart: "no"            the job runs once; the exit code IS the signal
+#   - init: true               container-init reaps orphans and forwards stop
+#                              signals to the entrypoint (clean Chromium stop)
+#   - no ports, no EXPOSE      CDP stays inside the container; nothing is
+#                              reachable from the host
+#   - no healthcheck           a batch worker has no long-running liveness;
+#                              the process exit code is the health signal
+#   - read_only: true          image filesystem is immutable at run time; only
+#                              the named volume and the tmpfs mounts are
+#                              writable (chromium requires a writable $HOME —
+#                              /home/node — and a scratch /tmp, both tmpfs)
+#   - tmpfs ownership          /home/node is mounted uid=1000,gid=1000 (the
+#                              non-root node user); a plain tmpfs inherits the
+#                              layered directory's root:root 0755 and Chromium
+#                              aborts when it cannot create its crashpad
+#                              database under $HOME
+#   - no-new-privileges        blocks setuid/setgid privilege escalation
+#   - bounded logs             json-file rotation keeps host disk bounded
+#   - no cron                  an external scheduler invokes the job
+#                              (docker compose run --rm writeback)
+#
+# Secrets (Coolify environment variables) and active configuration are supplied
+# at run time only; both are excluded from the build context by .dockerignore
+# and are never baked into the image. Persistent state (.runtime/) lives in the
+# named writeback_runtime volume.
+
+name: care1960-prognocis-writeback
+
+services:
+  writeback:
+    # GitHub Actions builds and pushes this image; Coolify only pulls it.
+    image: 557690613141.dkr.ecr.us-east-1.amazonaws.com/allgpt-co/quickrcm-prognocis-writeback:latest
+    pull_policy: always
+
+    # Single-shot batch worker: never restarted, never kept alive.
+    restart: "no"
+    init: true
+
+    # Hardening: immutable image filesystem, tmpfs scratch, no privilege
+    # escalation, bounded log rotation. Chromium needs a writable $HOME
+    # (crashpad database) and scratch dir; both are tmpfs. The /home/node
+    # tmpfs must be owned by the non-root user (uid=1000,gid=1000) — a default
+    # tmpfs inherits the image directory's root:root 0755 and Chromium aborts
+    # at startup. The named volume (below) is the only persistent write path.
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /home/node:uid=1000,gid=1000,mode=700
+    security_opt:
+      - no-new-privileges:true
+
+    # Resource limits from measurement (Phase 4, composition:
+    # entrypoint + Chromium headless held at CDP-wait steady state):
+    #   mem: 186-188 MiB RSS after browser startup
+    #   pids: 19 processes / ~146 threads (docker stats PIDs = threads)
+    # Limits are ~10x the measured idle memory (a real EHR page load adds
+    # renderer processes and working set) and ~3.5x the measured thread count;
+    # they only trip on a genuine runaway, never normal operation.
+    mem_limit: 2g
+    pids_limit: 512
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    # Set these in Coolify's Environment Variables (or a local .env).
+    # Never print resolved Compose configuration: it contains these secrets.
+    environment:
+      SUPABASE_ANON_KEY: ${SUPABASE_ANON_KEY}
+      SUPABASE_TENANT_API_KEY: ${SUPABASE_TENANT_API_KEY}
+      PROGNOCIS_USERNAME: ${PROGNOCIS_USERNAME}
+      PROGNOCIS_PASSWORD: ${PROGNOCIS_PASSWORD}
+      CLINICAL_WRITE_ACK: ${CLINICAL_WRITE_ACK}
+
+    volumes:
+      # Supply this file on the deployment server. For a pasted Coolify stack,
+      # create/populate its file mount through Coolify before deployment.
+      # The file must be readable by container uid 1000. Never commit its data.
+      - type: bind
+        source: ./config/writeback.json
+        target: /app/config/writeback.json
+        read_only: true
+        bind:
+          create_host_path: false
+
+      # Persistent browser profile + application runtime state: the named
+      # volume keeps .runtime/ (chromium profile, lock/audit/ledger, verification
+      # proof) across job runs. /app/.runtime is created node:node in the image
+      # so Docker's volume-init hands the fresh volume to the non-root user.
+      - writeback_runtime:/app/.runtime
+
+    # Production batch invocation, matching the image default CMD. The
+    # entrypoint normalizes the shorthand below to:
+    #   node src/cli.mjs run --config config/writeback.json
+    command: ["run", "--config", "config/writeback.json"]
+
+volumes:
+  # Persistent runtime state; survives `docker compose down` (removed only by
+  # an explicit `docker compose down -v`).
+  writeback_runtime:

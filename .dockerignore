@@ -1,0 +1,83 @@
+# ------------------------------------------------------------------
+# .dockerignore — production build context exclusions
+# ------------------------------------------------------------------
+# Secrets, PHI-bearing runtime state, local tooling caches, and editor
+# artifacts must never enter the image build context. The Dockerfile
+# controls exactly what is COPY'd; this file keeps the context lean
+# and prevents secret/PHI leakage into image layers or build cache.
+
+# --- Git / version control ---
+.git/
+.gitignore
+.gitattributes
+
+# --- Dependencies & package-manager caches ---
+node_modules/
+.npm/
+.pnpm-store/
+.yarn/
+
+# --- Secrets & environment files ---
+# Real .env files and environment-specific secret files (.env.local,
+# .env.production, ...) carry credentials and must never enter the build
+# context. The tracked .env.example template is deliberately re-included
+# via an explicit negation: it contains no secrets and stays available to
+# the build; runtime secrets are delivered via a mounted .env, never baked.
+.env
+.env.*
+!.env.example
+
+# --- PHI-bearing runtime state ---
+# Clinical responses/requests, cursor, lock, audit, ledger, and the
+# authenticated browser profile. Persistent state lives in a Docker
+# named volume mounted at /app/.runtime — never baked into an image.
+.runtime/
+
+# --- Active configuration ---
+# Contains real EHR URLs, captured PrognoCIS selectors, and org UUID.
+# config/writeback.example.json and config/care1960-*.example.json are
+# KEPT: they are synthetic, tracked, and used by the DRY validate:response
+# run and tests.
+config/writeback.json
+
+# --- Local tooling / agent caches ---
+.codex/
+.playwright-cli/
+.omo/
+
+# --- Playwright artifacts from local test runs ---
+playwright-report/
+test-results/
+coverage/
+.nyc_output/
+
+# --- Editor / IDE ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+.desktop.ini
+
+# --- OS / log / temp artifacts ---
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+*.tmp
+*.temp
+.cache/
+
+# --- Large tracked media (11.6 MB) that is never needed at build/runtime ---
+nuance-dax-copilot-demo-video_67wDMgmL (1).mp3
+
+# --- Captured payloads & docs (tracked, referenced only by README text) ---
+# response.md is a captured API response file (may contain clinical sample
+# data); docs/ holds the 458 KB architecture screenshot and guides. The
+# Dockerfile copies only src/, test/, test-support/, and the synthetic config
+# examples — these are excluded to keep the build context lean and free of
+# payload data.
+response.md
+docs/

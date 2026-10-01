@@ -150,7 +150,7 @@ trap 'stop_chromium' EXIT
 
 # --- resolve the command ----------------------------------------------------
 # Docker CMD (or a full override) arrives as $@. Recognized forms:
-#   (no args)                                    -> probe (the CMD default)
+#   (no args)                                    -> probe (CLI fallback)
 #   node src/cli.mjs [args]                      -> explicit CLI invocation
 #   run|probe|validate-config|validate-response  -> prepend node src/cli.mjs
 #   -flag / --flag ...                           -> prepend node src/cli.mjs

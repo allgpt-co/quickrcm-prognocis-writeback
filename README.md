@@ -38,8 +38,8 @@ headless Chromium, and CDP stay inside ONE container (CDP bound to
 the job; nothing runs cron inside the container.
 
 ```bash
-# 1. Build the image.
-docker compose build
+# 1. Pull the image published by GitHub Actions (ECR login required).
+docker compose pull
 
 # 2. Prepare the runtime inputs (neither enters the image):
 cp .env.example .env                          # fill in the secrets
@@ -49,9 +49,16 @@ cp config/writeback.example.json config/writeback.json  # set orgId + selectors
 docker compose run --rm writeback
 ```
 
-- `.env` is injected at run time (`env_file`) and never baked into the image.
-- `config/` is mounted read-only at `/app/config`; a missing
-  `config/writeback.json` fails cleanly inside the app (exit 1).
+- Compose resolves the five declared environment variables from the host or
+  local `.env`; Coolify supplies them through its Environment Variables page.
+- `config/writeback.json` is mounted read-only at `/app/config/writeback.json`;
+  it must exist before starting the container.
+- `config/care1960-request.batch.json` supplies the HTTP request body at
+  `/app/.runtime/care1960-request.json`. It requests up to one eligible record.
+- For container use, set `browser.cdpEndpoint` to `http://127.0.0.1:9223` and
+  `browser.headless` to `true` in the private runtime config. Never commit the
+  production config. For scheduling inside Coolify, see
+  [Coolify scheduling](docs/COOLIFY_SCHEDULING.md).
 - `.runtime/` persists in the `writeback_runtime` named volume (browser
   profile, lock/audit/ledger, verification proof) across job runs.
 - Hardened image filesystem: the root filesystem is read-only at run time;

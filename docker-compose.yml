@@ -93,6 +93,15 @@ services:
         bind:
           create_host_path: false
 
+      # HTTP POST body; contains only the batch limit, no patient identifiers.
+      # In a pasted Coolify stack, populate this file via a file mount/content.
+      - type: bind
+        source: ./config/care1960-request.batch.json
+        target: /app/.runtime/care1960-request.json
+        read_only: true
+        bind:
+          create_host_path: false
+
       # Persistent browser profile + application runtime state: the named
       # volume keeps .runtime/ (chromium profile, lock/audit/ledger, verification
       # proof) across job runs. /app/.runtime is created node:node in the image

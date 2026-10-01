@@ -8,7 +8,7 @@
   },
   "browser": {
     "cdpEndpoint": "http://127.0.0.1:9223",
-    "headless": false,
+    "headless": true,
     "executablePath": "",
     "userDataDir": ".runtime/shared-clinical-browser-profile",
     "navigationTimeoutMs": 45000,

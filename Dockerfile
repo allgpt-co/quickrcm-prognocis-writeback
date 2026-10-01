@@ -110,7 +110,8 @@ USER node
 
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 
-# Default command: probe (read-only). Chromium/CDP startup is handled by the
-# entrypoint; runtime .env and config/writeback.json are supplied as mounted
-# files.
-CMD ["node", "src/cli.mjs"]
+# Default command: production writeback. Chromium/CDP startup is handled by
+# the entrypoint; credentials and the required write acknowledgement are
+# supplied at runtime, and config/writeback.json is mounted externally.
+# Override with `probe --config config/writeback.json` for read-only checks.
+CMD ["node", "src/cli.mjs", "run", "--config", "config/writeback.json"]

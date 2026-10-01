@@ -44,7 +44,7 @@ defaults:
 
 jobs:
   build-and-push:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     permissions:
       id-token: write
       contents: read
@@ -91,6 +91,12 @@ jobs:
           echo "Pushing ${ECR_REGISTRY}/${ECR_REPOSITORY}:latest ..."
           docker push "${ECR_REGISTRY}/${ECR_REPOSITORY}:latest"
           echo "Pushed ${ECR_REGISTRY}/${ECR_REPOSITORY}:latest"
+
+      - name: Trigger Backend Deploy
+        run: |
+          curl -X POST \
+            -H "Authorization: Bearer ${{ secrets.COOLIFY_API_TOKEN }}" \
+            "${{ vars.COOLIFY_BACKEND_WEBHOOK }}"  
 
       # Failure-safe local cleanup: drop the intermediate local image tag from
       # the (ephemeral) runner even when a step above failed. The ECR images

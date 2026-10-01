@@ -95,10 +95,8 @@ services:
       # so Docker's volume-init hands the fresh volume to the non-root user.
       - writeback_runtime:/app/.runtime
 
-    # Production batch invocation. The image default CMD is `probe` (write-
-    # protected validation); the scheduled writeback job uses the `run`
-    # subcommand with the mounted config. The entrypoint normalizes this to
-    # the preserved production invocation:
+    # Production batch invocation, matching the image default CMD. The
+    # entrypoint normalizes the shorthand below to:
     #   node src/cli.mjs run --config config/writeback.json
     command: ["run", "--config", "config/writeback.json"]
 

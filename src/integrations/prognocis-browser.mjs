@@ -149,6 +149,62 @@ async function firstVisibleInSectionFrame(
   throw new Error(`Visible element not found in the configured section frame for ${label}`);
 }
 
+// The old patient rows remain visible while PrognoCIS debounces the fields and
+// loads filtered rows through AJAX. Wait for both the requested response and a
+// results-table update; a visible old row is not proof that search completed.
+export async function submitPatientSearchAndWait(page, patient, submit, timeoutMs = 60_000, rowSelector) {
+  const origin = new URL(page.url()).origin;
+  const marker = `__patientSearch_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+  for (const frame of page.frames()) {
+    await frame.evaluate(({ marker, rowSelector }) => {
+      const insideRow = node => node?.nodeType === 1 && (node.matches(rowSelector) || node.closest(rowSelector));
+      const relevant = node => node.nodeType === 1
+        && (node.matches(rowSelector) || node.closest(rowSelector) || node.querySelector(rowSelector));
+      const state = { changed: false };
+      state.observer = new MutationObserver(records => {
+        if (records.some(record => insideRow(record.target.nodeType === 3 ? record.target.parentElement : record.target)
+          || [...record.addedNodes, ...record.removedNodes].some(relevant))) state.changed = true;
+      });
+      state.observer.observe(document, { childList: true, subtree: true, characterData: true });
+      window[marker] = state;
+    }, { marker, rowSelector });
+  }
+  const completed = page.waitForResponse(response => {
+    const request = response.request(), url = new URL(response.url());
+    if (request.method() !== 'POST' || url.origin !== origin
+      || !url.pathname.endsWith('/ajaxLoadSearchData.action2')) return false;
+    let body;
+    try { body = normalize(decodeURIComponent((request.postData() ?? '').replace(/\+/g, ' '))); }
+    catch { return false; }
+    return body.includes(normalize(patient.firstName)) && body.includes(normalize(patient.lastName));
+  }, { timeout: timeoutMs }).then(async response => {
+    if (!response.ok() || await response.finished()) return { error: true };
+    return { response };
+  }).catch(error => ({ error }));
+  try {
+    await submit();
+    const result = await completed;
+    if (result.error) throw new Error('Filtered patient search response did not complete');
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      for (const frame of page.frames()) {
+        const changed = await frame.evaluate(({marker,rowSelector}) => window[marker]?.changed || (!window[marker] && !!document.querySelector(rowSelector)), {marker,rowSelector}).catch(() => false);
+        if (changed) return;
+      }
+      await page.waitForTimeout(100);
+    }
+    throw new Error('Filtered patient search did not update the results table');
+  } catch {
+    throw Object.assign(new Error('Patient search did not finish loading the requested name filters'), {
+      code: 'PATIENT_SEARCH_NOT_LOADED'
+    });
+  } finally {
+    for (const frame of page.frames()) {
+      await frame.evaluate(marker => { window[marker]?.observer.disconnect(); delete window[marker]; }, marker).catch(() => {});
+    }
+  }
+}
+
 export class PrognocisBrowser {
   constructor(page, config, automation, credentials = {}) {
     this.page = page;
@@ -347,34 +403,49 @@ export class PrognocisBrowser {
     );
     await fillField(lastName.locator, patient.lastName);
     await fillField(firstName.locator, patient.firstName);
-    if (this.selectors.patientSearchButton) {
-      await clickInFrames(searchPage, this.selectors.patientSearchButton, 'PrognoCIS patient search');
-    } else {
-      await firstName.locator.dispatchEvent('keyup', {
-        key: 'ArrowRight', code: 'ArrowRight', keyCode: 39, which: 39
-      });
-    }
-
-    const rowsResult = await firstVisibleInFrames(
-      searchPage,
-      this.selectors.patientResultRows,
-      'PrognoCIS patient results'
-    );
-    const rows = rowsResult.scope.locator(this.selectors.patientResultRows);
-    let matches = [];
-    const deadline = Date.now() + (this.config.patientSearchTimeoutMs ?? 10_000);
-    do {
-      matches = [];
-      for (let index = 0; index < await rows.count(); index += 1) {
-        const row = rows.nth(index);
-        if (!(await row.isVisible().catch(() => false))) continue;
-        if (!patientRowMatches(await row.innerText().catch(() => ''), patient)) continue;
-        matches.push(row);
+    const timeout = this.config.patientSearchTimeoutMs ?? 60_000;
+    await submitPatientSearchAndWait(searchPage, patient, async () => {
+      if (this.selectors.patientSearchButton) {
+        await clickInFrames(searchPage, this.selectors.patientSearchButton, 'PrognoCIS patient search');
+      } else {
+        await firstName.locator.dispatchEvent('keyup', {
+          key: 'ArrowRight', code: 'ArrowRight', keyCode: 39, which: 39
+        });
       }
-      if (matches.length > 0) break;
+    }, timeout, this.selectors.patientResultRows);
+
+    // Reacquire rows after the results document loads. Require a stable result
+    // set so a partially rendered table cannot appear uniquely matched.
+    let matches = [], signature = '', stableSince = 0, settled = false;
+    const deadline = Date.now() + timeout;
+    do {
+      const current = [], candidateMatches = [];
+      try {
+        for (const scope of pageScopes(searchPage)) {
+          const rows = scope.locator(this.selectors.patientResultRows);
+          for (let index = 0; index < await rows.count(); index += 1) {
+            const row = rows.nth(index);
+            if (!(await row.isVisible().catch(() => false))) continue;
+            const text = await row.innerText();
+            current.push(text);
+            if (patientRowMatches(text, patient)) candidateMatches.push(row);
+          }
+        }
+        const next = JSON.stringify(current);
+        if (next !== signature) { signature = next; stableSince = Date.now(); }
+        matches = candidateMatches;
+        if (matches.length > 0 && Date.now() - stableSince >= 300) { settled = true; break; }
+      } catch (error) {
+        if (searchPage.isClosed()) throw error;
+        matches = []; signature = ''; stableSince = 0;
+      }
       await searchPage.waitForTimeout(100);
     } while (Date.now() < deadline);
+    if (!settled && matches.length > 0) throw new Error('Patient search results did not settle before timeout');
     const exact = requireOneMatch(matches, 'patient identity');
+    if (!patientRowMatches(await exact.innerText(), patient)) {
+      throw new Error('Patient search result changed before exact selection');
+    }
     const closes = searchPage === this.page
       ? null
       : searchPage.waitForEvent('close', { timeout: this.config.popupTimeoutMs }).catch(() => null);

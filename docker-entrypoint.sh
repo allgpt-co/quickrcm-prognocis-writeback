@@ -200,6 +200,7 @@ if [ "$START_CHROMIUM" -eq 1 ]; then
   #   --headless=new                    headless browser (the app's config
   #                                     headless flag only applies to
   #                                     self-launch mode, which is unused here)
+  #   --disable-popup-blocking          allow the post-login application window
   #   --no-sandbox                      non-root user; matches Playwright's
   #                                     chromiumSandbox=false default
   #   --remote-debugging-address=127.0.0.1  CDP bound to loopback only
@@ -219,6 +220,7 @@ if [ "$START_CHROMIUM" -eq 1 ]; then
   #                                     connectOverCDP
   "$CHROMIUM_BIN" \
     --headless=new \
+    --disable-popup-blocking \
     --no-sandbox \
     --remote-debugging-address=127.0.0.1 \
     --remote-debugging-port="$CDP_PORT" \

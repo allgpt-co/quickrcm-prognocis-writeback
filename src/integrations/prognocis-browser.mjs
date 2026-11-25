@@ -367,26 +367,29 @@ export class PrognocisBrowser {
 
   async openEncounterHistory() {
     await this.dismissTransientOverlay();
-    const popupPromise = this.rootPage.context().waitForEvent('page', {
-      timeout: this.config.popupTimeoutMs
-    }).catch(() => null);
-    await clickInFrames(
-      this.rootPage,
-      this.selectors.encounterMenu,
-      'PrognoCIS encounter menu',
-      { allowHiddenLegacy: true }
-    );
-    let historyPage = await popupPromise;
-    if (!historyPage && this.config.encounterHistoryUrlPattern) {
-      const pattern = new RegExp(this.config.encounterHistoryUrlPattern, 'i');
-      historyPage = this.rootPage.context().pages().find((candidate) => (
-        !candidate.isClosed() && candidate !== this.rootPage && pattern.test(candidate.url())
-      ));
-    }
-    historyPage ??= this.rootPage;
-    this.watchDialogs(historyPage);
-    await historyPage.waitForLoadState('domcontentloaded');
-    return historyPage;
+    const existing = new Set(this.rootPage.context().pages());
+    // Start the load budget AFTER the menu click; hidden legacy menus can
+    // consume the entire old popup timeout before opening a window.
+    await clickInFrames(this.rootPage, this.selectors.encounterMenu,
+      'PrognoCIS encounter menu', { allowHiddenLegacy: true, timeout: 5_000 });
+    const deadline = Date.now() + Math.max(this.config.popupTimeoutMs ?? 20_000, 30_000);
+    const pattern = this.config.encounterHistoryUrlPattern
+      ? new RegExp(this.config.encounterHistoryUrlPattern, 'i') : null;
+    do {
+      for (const candidate of this.rootPage.context().pages()) {
+        if (candidate.isClosed()) continue;
+        if (candidate !== this.rootPage && existing.has(candidate)) continue;
+        if (pattern && !pattern.test(candidate.url())) continue;
+        const rows = await optionalVisibleInFrames(candidate, this.selectors.encounterRows).catch(() => null);
+        if (!rows) continue;
+        this.watchDialogs(candidate);
+        return candidate;
+      }
+      await this.rootPage.waitForTimeout(100);
+    } while (Date.now() < deadline);
+    throw Object.assign(new Error('PrognoCIS encounter history did not finish loading'), {
+      code: 'ENCOUNTER_HISTORY_LOAD_TIMEOUT'
+    });
   }
 
   async selectPatient(patient) {
@@ -530,6 +533,7 @@ export class PrognocisBrowser {
       'PrognoCIS encounter editor'
     );
     await this.dismissTransientOverlay({ waitForPossible: true });
+    this.currentEncounterId = exact.encounterId;
     this.currentEncounterStatus = exact.status;
     this.assertNoUnexpectedDialog();
     return exact.encounterId;
@@ -818,7 +822,7 @@ export class PrognocisBrowser {
       ? this.editorPage.waitForEvent('framenavigated', {
         predicate: frame => new RegExp(pattern, 'i').test(frame.url()),
         timeout: this.config.sectionLoadTimeoutMs ?? 20_000
-      }).then(frame => frame.waitForLoadState('domcontentloaded')).then(() => null, error => error)
+      }).then(() => null, error => error)
       : null;
     await clickInFrames(
       this.editorPage,
@@ -828,12 +832,32 @@ export class PrognocisBrowser {
     );
     if (navigation) { const error = await navigation; if (error) throw error; }
     if (assessmentPage) {
-      const notes = await firstVisibleInSectionFrame(
-        this.editorPage, this.selectors[`${section}NotesTab`],
-        this.config.sectionUrlPatterns?.[section], `PrognoCIS ${section} Notes tab`,
-        this.config.sectionLoadTimeoutMs ?? 20_000
-      );
-      await notes.locator.click();
+      const deadline = Date.now() + (this.config.sectionLoadTimeoutMs ?? 30_000);
+      do {
+        // A frame from framenavigated can be replaced immediately. Always
+        // reacquire the current document, never reuse the detached event frame.
+        for (const scope of pageScopes(this.editorPage)) {
+          if (pattern && !new RegExp(pattern, 'i').test(scope.url())) continue;
+          try {
+            if (await scope.evaluate(() => document.readyState) === 'loading') continue;
+            if (this.currentEncounterId) {
+              const id = await scope.locator('[name="msEnc_id"]').inputValue({ timeout: 500 });
+              if (id !== this.currentEncounterId) continue;
+            }
+            const notes = scope.locator(this.selectors[section + 'NotesTab']).first();
+            if (!await notes.isVisible()) continue;
+            const field = scope.locator(this.selectors[section + 'Field']).first();
+            if (!await field.isVisible()) await notes.click({ timeout: 1_000 });
+            if (await field.isVisible()) return field;
+          } catch (error) {
+            if (!/context|detach|closed|destroyed|timeout/i.test(error.message)) throw error;
+          }
+        }
+        await this.editorPage.waitForTimeout(100);
+      } while (Date.now() < deadline);
+      throw Object.assign(new Error('PrognoCIS Notes document did not stabilize'), {
+        code: 'ASSESSMENT_PLAN_LOAD_TIMEOUT'
+      });
     }
     let field = await firstVisibleInSectionFrame(
       this.editorPage,
@@ -1086,7 +1110,17 @@ export class PrognocisBrowser {
     }
   }
 
-  async process(rawArtifact, { writeEnabled }) {
+  async process(rawArtifact, options) {
+    this.failureStage = 'OPEN';
+    try {
+      return await this.processRecord(rawArtifact, options);
+    } catch (error) {
+      if (!error.code) error.code = 'EHR_' + this.failureStage + '_FAILED';
+      throw error;
+    }
+  }
+
+  async processRecord(rawArtifact, { writeEnabled }) {
     const artifact = validateClinicalArtifact(rawArtifact);
     if (this.editorPage !== this.rootPage && !this.editorPage.isClosed()) {
       await this.editorPage.close({ runBeforeUnload: false });
@@ -1096,7 +1130,9 @@ export class PrognocisBrowser {
     this.unexpectedDialog = null;
     await this.page.goto(this.config.url, { waitUntil: 'domcontentloaded' });
     await this.open();
+    this.failureStage = 'PATIENT_SELECTION';
     await this.selectPatient(artifact.patient);
+    this.failureStage = 'ENCOUNTER_SELECTION';
     const ehrEncounterId = await this.openExactEncounter(artifact.encounter);
     if (!writeEnabled) {
       return { status: 'PROBED', ehrEncounterId, artifactHash: artifact.artifactHash };
@@ -1104,6 +1140,7 @@ export class PrognocisBrowser {
 
     await this.assertEncounterIsEditable();
     await this.selectHpiComplaint(artifact.encounter.appointmentType);
+    this.failureStage = 'SECTION_INSPECTION';
     const before = await this.inspectDraft(artifact);
     if (before.exact && await this.verifyDraftStatus(artifact, ehrEncounterId)) {
       return {
@@ -1114,11 +1151,15 @@ export class PrognocisBrowser {
       };
     }
     this.assertNoDifferentClinicalText(before);
+    this.failureStage = 'SECTION_WRITE';
     await this.writeMissingSections(artifact, before);
+    this.failureStage = 'DRAFT_SAVE';
     await this.saveDraftAndVerifyStatus(artifact, ehrEncounterId);
 
+    this.failureStage = 'READBACK_NAVIGATION';
     await this.reopenExactEncounter(artifact, ehrEncounterId);
     await this.selectHpiComplaint(artifact.encounter.appointmentType);
+    this.failureStage = 'READBACK_INSPECTION';
     const after = await this.inspectDraft(artifact);
     if (!after.exact || !(await this.verifyDraftStatus(artifact, ehrEncounterId))) {
       const error = new Error('Reopened PrognoCIS draft did not match the approved clinical artifact');

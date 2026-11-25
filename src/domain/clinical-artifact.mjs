@@ -99,7 +99,9 @@ function hashInput(record) {
     sections: {
       hpi: record.sections.hpi,
       ros: record.sections.ros,
-      physicalExamination: record.sections.physicalExamination
+      physicalExamination: record.sections.physicalExamination,
+      assessment: record.sections.assessment,
+      plan: record.sections.plan
     },
     diagnoses: [...record.diagnoses]
       .map((diagnosis) => ({
@@ -119,7 +121,7 @@ export function clinicalArtifactHash(record) {
 function normalizeClinicalArtifact(value) {
   const artifact = requireObject(value, 'clinical artifact');
   requireExactFields(artifact, TOP_LEVEL_FIELDS, 'clinical artifact');
-  if (artifact.version !== 3) throw new Error('Unsupported clinical artifact version');
+  if (artifact.version !== 4) throw new Error('Unsupported clinical artifact version');
   if (artifact.source !== 'care1960-scribe') throw new Error('Unsupported clinical artifact source');
   if (artifact.status !== 'ATTESTED') throw new Error('Only provider-approved ATTESTED notes may be exported');
 
@@ -134,7 +136,7 @@ function normalizeClinicalArtifact(value) {
   const attestation = requireObject(artifact.attestation, 'attestation');
   requireExactFields(attestation, new Set(['at', 'byId']), 'attestation');
   const sections = requireObject(artifact.sections, 'sections');
-  requireExactFields(sections, new Set(['hpi', 'ros', 'physicalExamination']), 'sections');
+  requireExactFields(sections, new Set(['hpi', 'ros', 'physicalExamination', 'assessment', 'plan']), 'sections');
 
   if (!Array.isArray(artifact.diagnoses) || artifact.diagnoses.length !== 0) {
     throw new Error('Care1960 exports contain narrative sections only; diagnoses must be empty');
@@ -170,7 +172,9 @@ function normalizeClinicalArtifact(value) {
         sections.physicalExamination,
         'sections.physicalExamination',
         200_000
-      )
+      ),
+      assessment: normalizeClinicalSection(sections.assessment, 'sections.assessment', 200_000),
+      plan: normalizeClinicalSection(sections.plan, 'sections.plan', 200_000)
     },
     diagnoses: [],
     artifactHash: artifact.artifactHash

@@ -23,6 +23,8 @@
   "note": {
     "hpi": "Patient reports an improving cough.",
     "ros": "Respiratory: cough. Constitutional: denies fever or chills.",
-    "physical_examination": "Lungs clear to auscultation."
+    "physical_examination": "Lungs clear to auscultation.",
+    "assessment": "Improving cough.",
+    "plan": "Follow up as needed."
   }
 }

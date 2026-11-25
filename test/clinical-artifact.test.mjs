@@ -9,7 +9,7 @@ import { artifact } from '../test-support/artifact.mjs';
 test('accepts only the strict provider-attested clinical artifact', () => {
   const validated = validateClinicalArtifact(artifact());
   assert.equal(validated.status, 'ATTESTED');
-  assert.deepEqual(Object.keys(validated.sections), ['hpi', 'ros', 'physicalExamination']);
+  assert.deepEqual(Object.keys(validated.sections), ['hpi', 'ros', 'physicalExamination', 'assessment', 'plan']);
   assert.deepEqual(validated.diagnoses, []);
 });
 
@@ -27,6 +27,7 @@ test('rejects diagnosis codes and retired source artifacts', () => {
   const value = artifact({ diagnoses: [{ system: 'ICD10CM', code: 'R05.9' }] });
   assert.throws(() => validateClinicalArtifact(value), /diagnoses must be empty/);
   assert.throws(() => validateClinicalArtifact(artifact({ version: 2 })), /Unsupported/);
+  assert.throws(() => validateClinicalArtifact(artifact({ version: 3 })), /Unsupported/);
   assert.throws(() => validateClinicalArtifact(artifact({ source: 'retired-browser-source' })), /Unsupported/);
 });
 

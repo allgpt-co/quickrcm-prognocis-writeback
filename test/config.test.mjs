@@ -78,6 +78,8 @@ function addWriteSelectors(value) {
     physicalExaminationMenu: '#pe',
     physicalExaminationField: '#pe-field',
     physicalExaminationSaveButton: '#pe-save',
+    assessmentMenu: '#as', assessmentNotesTab: '#notes', assessmentField: '#as-field', assessmentSaveButton: '#as-save',
+    planMenu: '#as', planNotesTab: '#notes', planField: '#plan-field', planSaveButton: '#as-save',
     sectionSaveSuccess: '#section-saved',
     saveDraftButton: '#save-draft',
     draftSaveSuccess: '#draft-saved',

@@ -82,13 +82,13 @@ test('rejects explicitly stale or malformed written_back source states before br
 
 test('maps wrapped POST responses and database section names through configured JSON paths', () => {
   const value = record();
-  value.note = { hpi_text: 'Documented HPI.', ros_text: 'Documented ROS.', physical_exam_text: 'Documented exam.' };
+  value.note = { hpi_text: 'Documented HPI.', ros_text: 'Documented ROS.', physical_exam_text: 'Documented exam.', assessment: 'Assessment.', plan: 'Plan.' };
   const [artifact] = artifactsFromApiResponse({ data: [value] }, {
     ...fileConfig, recordsPath: 'data', fields: {
       hpi: 'note.hpi_text', ros: 'note.ros_text', physicalExamination: 'note.physical_exam_text'
     }
   });
-  assert.deepEqual(artifact.sections, { hpi: 'Documented HPI.', ros: 'Documented ROS.', physicalExamination: 'Documented exam.' });
+  assert.deepEqual(artifact.sections, { hpi: 'Documented HPI.', ros: 'Documented ROS.', physicalExamination: 'Documented exam.', assessment: 'Assessment.', plan: 'Plan.' });
 });
 
 test('accepts null PrognoCIS identities and appointment type from the API', () => {
@@ -126,7 +126,7 @@ test('rejects sync-only, HPI-only, unapproved, wrong-tenant, ambiguous, or ident
 });
 
 test('migration 0023 section values pass API mapping while missing fields and wrong types still fail', () => {
-  const mappings = { hpi: 'hpi', ros: 'ros', physical_examination: 'physicalExamination' };
+  const mappings = { hpi: 'hpi', ros: 'ros', physical_examination: 'physicalExamination', assessment: 'assessment', plan: 'plan' };
   for (const [field, section] of Object.entries(mappings)) {
     for (const text of [null, '', ' \t\n ', 'Not documented', '## Physical Examination']) {
       const response = record();
@@ -144,8 +144,8 @@ test('migration 0023 section values pass API mapping while missing fields and wr
     }
   }
   const allNull = record();
-  allNull.note = { hpi: null, ros: null, physical_examination: null };
-  assert.deepEqual(artifactsFromApiResponse(allNull, fileConfig)[0].sections, { hpi: '', ros: '', physicalExamination: '' });
+  allNull.note = { hpi: null, ros: null, physical_examination: null, assessment: null, plan: null };
+  assert.deepEqual(artifactsFromApiResponse(allNull, fileConfig)[0].sections, { hpi: '', ros: '', physicalExamination: '', assessment: '', plan: '' });
 });
 
 test('response files are reread and changed content prevents recording verification', async (t) => {
@@ -402,7 +402,8 @@ test('migration 0010 SQL response is accepted through HTTP with no field overrid
   assert.deepEqual(artifact.sections, {
     hpi: sqlResponse[0].note.hpi,
     ros: sqlResponse[0].note.ros,
-    physicalExamination: sqlResponse[0].note.physical_examination
+    physicalExamination: sqlResponse[0].note.physical_examination,
+    assessment: sqlResponse[0].note.assessment, plan: sqlResponse[0].note.plan
   });
   assert.equal(artifact.attestation.at, new Date(sqlResponse[0].attestation.attested_at).toISOString());
   assert.equal(artifact.encounter.startTime, new Date(sqlResponse[0].appointment.starts_at).toISOString());

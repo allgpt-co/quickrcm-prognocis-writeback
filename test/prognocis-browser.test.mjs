@@ -389,7 +389,7 @@ test('Wellness exam popup selection unlocks HPI, saves to that complaint, and ve
     assert.equal(await page.locator('#msPth_curcmp_notes').isEditable(), false);
     await destination.selectHpiComplaint('Follow Up');
     await destination.writeMissingSections(value, { sections: {
-      hpi: { matches: false }, ros: { matches: true }, physicalExamination: { matches: true }
+      hpi: { matches: false }, ros: { matches: true }, physicalExamination: { matches: true }, assessment: { matches: true }, plan: { matches: true }
     } });
     assert.equal(savedHpi, value.sections.hpi);
     assert.deepEqual(saves, ['hpi']);
@@ -430,7 +430,7 @@ test('write mode selects and verifies the complaint before inspecting or writing
         sections: {
           hpi: { empty: !exact, matches: exact },
           ros: { empty: !exact, matches: exact },
-          physicalExamination: { empty: !exact, matches: exact }
+          physicalExamination: { empty: !exact, matches: exact }, assessment: { empty: !exact, matches: exact }, plan: { empty: !exact, matches: exact }
         },
         exact
       };

@@ -6,7 +6,7 @@ import { care1960Artifact } from '../test-support/care1960-artifact.mjs';
 test('Care1960 accepts null, blank, heading-only and placeholder attested sections', () => {
   const value = care1960Artifact();
   assert.deepEqual(validateClinicalArtifact(value), value);
-  for (const section of ['hpi', 'ros', 'physicalExamination']) {
+  for (const section of ['hpi', 'ros', 'physicalExamination', 'assessment', 'plan']) {
     for (const text of [null, '', ' \n\t ', 'Not documented', 'N/A', 'Unknown', '## ROS']) {
       const normalized = buildClinicalArtifact({ ...value, sections: { ...value.sections, [section]: text } });
       assert.equal(validateClinicalArtifact(normalized).sections[section], text?.trim() ?? '');
@@ -17,7 +17,7 @@ test('Care1960 accepts null, blank, heading-only and placeholder attested sectio
 
 test('Care1960 still rejects missing keys, wrong narrative types and oversized sections', () => {
   const value = care1960Artifact();
-  for (const section of ['hpi', 'ros', 'physicalExamination']) {
+  for (const section of ['hpi', 'ros', 'physicalExamination', 'assessment', 'plan']) {
     const sections = { ...value.sections };
     delete sections[section];
     assert.throws(() => buildClinicalArtifact({ ...value, sections }), new RegExp(`sections.${section}`));
@@ -30,10 +30,10 @@ test('Care1960 still rejects missing keys, wrong narrative types and oversized s
 
 test('null and blank sections produce the same normalized artifact for idempotent replay', () => {
   const value = care1960Artifact();
-  const fromNull = buildClinicalArtifact({ ...value, sections: { hpi: null, ros: null, physicalExamination: null } });
-  const fromBlank = buildClinicalArtifact({ ...value, sections: { hpi: '', ros: ' \t', physicalExamination: '\n' } });
+  const fromNull = buildClinicalArtifact({ ...value, sections: { hpi: null, ros: null, physicalExamination: null, assessment: null, plan: null } });
+  const fromBlank = buildClinicalArtifact({ ...value, sections: { hpi: '', ros: ' \t', physicalExamination: '\n', assessment: '', plan: '' } });
   assert.deepEqual(fromNull, fromBlank);
-  assert.deepEqual(validateClinicalArtifact(fromNull).sections, { hpi: '', ros: '', physicalExamination: '' });
+  assert.deepEqual(validateClinicalArtifact(fromNull).sections, { hpi: '', ros: '', physicalExamination: '', assessment: '', plan: '' });
 });
 
 test('Care1960 accepts optional PrognoCIS identities and appointment type', () => {

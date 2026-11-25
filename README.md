@@ -1,17 +1,17 @@
 # Care1960 API to PrognoCIS writeback
 
 The input is the JSON output of the Care1960 API. Playwright opens only
-PrognoCIS, matches the patient and encounter, and writes HPI, ROS, and Physical
-Examination as narrative text. The source browser scraper and note-heading
+PrognoCIS, matches the patient and encounter, and writes HPI, ROS, Physical
+Examination, Assessment, and Plan as narrative text. The source browser scraper and note-heading
 parser have been removed.
 
 ```text
 Care1960 POST response (HTTP or captured JSON file)
   -> validate tenant, ATTESTED status, attestation, patient/encounter IDs
-  -> map HPI + ROS + Physical Examination
+  -> map HPI + ROS + Physical Examination + Assessment + Plan
   -> match the exact PrognoCIS patient and encounter
   -> stop on conflicting existing text; save missing sections as a draft
-  -> reopen and verify all three sections and draft status
+  -> reopen and verify all five sections and draft status
   -> record local verification proof; skip the same verified content on repeats
 ```
 
@@ -259,3 +259,5 @@ noVNC available for login/MFA. Run one configured probe and a supervised draft
 canary before scheduling. See [readiness](LIVE_READINESS_CHECKLIST.md),
 [architecture](docs/ARCHITECTURE.md), and the
 [full Hermes production cron runbook](docs/HERMES_PRODUCTION_CRON_RUNBOOK.md).
+
+Assessment and Plan use Assessment → Notes. Both are required API keys (text or null) in the version 4 artifact and are included in its verification hash. Deploy Care1960 migration 0028 before this writer; configure both Notes-tab selectors and Assessment page/save URL patterns as in the example. Legacy version 3 artifacts are rejected. Existing acknowledged exports are not automatically requeued. The writer preserves conflicting clinician text and never edits diagnosis codes or Procedures.

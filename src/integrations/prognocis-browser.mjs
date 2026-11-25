@@ -19,7 +19,7 @@ import {
   readField
 } from '../browser/locators.mjs';
 
-const SECTION_NAMES = ['hpi', 'ros', 'physicalExamination'];
+const SECTION_NAMES = ['hpi', 'ros', 'physicalExamination', 'assessment', 'plan'];
 
 function normalize(value) {
   return String(value ?? '').normalize('NFKC').toLowerCase().replace(/\s+/g, ' ').trim();
@@ -810,12 +810,31 @@ export class PrognocisBrowser {
 
   async sectionField(section, appointmentType, { allowTemplate = false } = {}) {
     await this.dismissTransientOverlay();
+    const assessmentPage = section === 'assessment' || section === 'plan';
+    const pattern = this.config.sectionUrlPatterns?.[section];
+    // Both narratives share a page. Await the new document so a still-visible
+    // field from the previous visit cannot be filled while navigation is pending.
+    const navigation = assessmentPage && pattern
+      ? this.editorPage.waitForEvent('framenavigated', {
+        predicate: frame => new RegExp(pattern, 'i').test(frame.url()),
+        timeout: this.config.sectionLoadTimeoutMs ?? 20_000
+      }).then(frame => frame.waitForLoadState('domcontentloaded')).then(() => null, error => error)
+      : null;
     await clickInFrames(
       this.editorPage,
       this.selectors[`${section}Menu`],
       `PrognoCIS ${section} section`,
       { allowHiddenLegacy: true }
     );
+    if (navigation) { const error = await navigation; if (error) throw error; }
+    if (assessmentPage) {
+      const notes = await firstVisibleInSectionFrame(
+        this.editorPage, this.selectors[`${section}NotesTab`],
+        this.config.sectionUrlPatterns?.[section], `PrognoCIS ${section} Notes tab`,
+        this.config.sectionLoadTimeoutMs ?? 20_000
+      );
+      await notes.locator.click();
+    }
     let field = await firstVisibleInSectionFrame(
       this.editorPage,
       this.selectors[`${section}Field`],
@@ -925,6 +944,8 @@ export class PrognocisBrowser {
         await this.assertSelectedHpiComplaint();
       }
       await fillField(field, artifact.sections[section]);
+      // Assessment/Plan tracks edits on keyup, not input/change.
+      if (section === 'assessment' || section === 'plan') await field.press('End');
       if (normalizeClinicalText(await readField(field)) !== normalizeClinicalText(artifact.sections[section])) {
         throw new Error(`PrognoCIS ${section} field did not retain the approved text before save`);
       }
@@ -991,7 +1012,7 @@ export class PrognocisBrowser {
 
   async saveDraftAndVerifyStatus(artifact, expectedEncounterId) {
     // The production narrative-only flow saves each section individually.
-    // It never visits Assessment or requires another encounter-save action.
+    // Assessment and Plan use the shared Notes page; no encounter signing occurs.
     if (this.config.draftSaveStrategy !== 'sections-only') {
       const save = await firstVisibleInSectionFrame(
         this.editorPage, this.selectors.saveDraftButton,

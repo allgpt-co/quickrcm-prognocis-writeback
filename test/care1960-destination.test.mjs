@@ -15,12 +15,12 @@ for (const scenario of [
   { name: 'full narratives', note: sqlResponse[0].note },
   { name: 'placeholder narratives', note: { hpi: sqlResponse[0].note.hpi, ros: 'Not documented', physical_examination: 'Not documented' } },
   { name: 'null and blank sections', note: { hpi: sqlResponse[0].note.hpi, ros: null, physical_examination: ' \n\t ' } },
-  { name: 'all sections empty', note: { hpi: null, ros: '', physical_examination: null } },
+  { name: 'all sections empty', note: { hpi: null, ros: '', physical_examination: null, assessment: null, plan: null } },
   { name: 'heading-only sections', note: { hpi: '## HPI', ros: 'ROS:', physical_examination: 'Physical Examination:' } }
 ]) {
 test(`${scenario.name} survive Playwright save/read-back, replay without writes, and preserve conflicting EHR text`, async () => {
   const response = structuredClone(sqlResponse);
-  response[0].note = scenario.note;
+  response[0].note = { assessment: null, plan: null, ...scenario.note };
   const executablePath = await resolveChromiumExecutable({
     projectRoot: process.cwd(),
     executablePath: process.env.PROGNOCIS_TEST_CHROMIUM_EXECUTABLE ?? ''
@@ -29,7 +29,7 @@ test(`${scenario.name} survive Playwright save/read-back, replay without writes,
   const browser = await chromium.launch({ headless: true, executablePath });
   try {
     const page = await browser.newPage();
-    const saved = { hpi: '', ros: '', physicalExamination: '' };
+    const saved = { hpi: '', ros: '', physicalExamination: '', assessment: '', plan: '' };
     const writes = [];
     await page.route('https://ehr.example.test/**', async (route) => {
       if (route.request().method() === 'POST') {
@@ -57,6 +57,7 @@ test(`${scenario.name} survive Playwright save/read-back, replay without writes,
     });
     const selectors = { draftStatus: '#status', saveDraftButton: '#draft-save', hpiActiveComplaintId: '#active-complaint' };
     for (const section of Object.keys(saved)) {
+      selectors[`${section}NotesTab`] = `#${section}-menu`;
       selectors[`${section}Menu`] = `#${section}-menu`;
       selectors[`${section}Field`] = `#${section}`;
       selectors[`${section}SaveButton`] = `#${section}-save`;
@@ -95,12 +96,20 @@ test(`${scenario.name} survive Playwright save/read-back, replay without writes,
     assert.deepEqual(saved, {
       hpi: scenario.note.hpi?.trim() ?? '',
       ros: scenario.note.ros?.trim() ?? '',
-      physicalExamination: scenario.note.physical_examination?.trim() ?? ''
+      physicalExamination: scenario.note.physical_examination?.trim() ?? '',
+      assessment: scenario.note.assessment?.trim() ?? '', plan: scenario.note.plan?.trim() ?? ''
     });
     assert.deepEqual(writes, expectedWrites);
     const second = await destination.process(artifact, { writeEnabled: true });
     assert.equal(second.duplicate, true);
     assert.deepEqual(writes, expectedWrites);
+    for (const section of ['assessment', 'plan']) {
+      const original = saved[section];
+      saved[section] = 'Existing different clinician text';
+      await assert.rejects(destination.process(artifact, { writeEnabled: true }), /refusing overwrite/);
+      assert.deepEqual(writes, expectedWrites);
+      saved[section] = original;
+    }
     saved.ros = 'Existing clinician ROS must be preserved.';
     for (const incoming of [null, 'Not documented', 'Different reviewed ROS.']) {
       const changed = buildClinicalArtifact({ ...artifact, sections: { ...artifact.sections, ros: incoming } });

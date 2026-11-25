@@ -84,14 +84,14 @@ function validatePrognocis(config) {
     prognocis.sectionUrlPatterns ?? {},
     'prognocis.sectionUrlPatterns'
   );
-  for (const section of ['hpi', 'ros', 'physicalExamination']) {
+  for (const section of ['hpi', 'ros', 'physicalExamination', 'assessment', 'plan']) {
     pattern(sectionUrlPatterns[section], `prognocis.sectionUrlPatterns.${section}`);
   }
   pattern(prognocis.sectionSaveUrlPattern, 'prognocis.sectionSaveUrlPattern');
   pattern(prognocis.draftSaveUrlPattern, 'prognocis.draftSaveUrlPattern');
   pattern(prognocis.draftSaveFrameUrlPattern, 'prognocis.draftSaveFrameUrlPattern');
   for (const [section, value] of Object.entries(prognocis.sectionSaveUrlPatterns ?? {})) {
-    if (!['hpi', 'ros', 'physicalExamination'].includes(section)) throw new Error('Unknown section save pattern');
+    if (!['hpi', 'ros', 'physicalExamination', 'assessment', 'plan'].includes(section)) throw new Error('Unknown section save pattern');
     pattern(value, `prognocis.sectionSaveUrlPatterns.${section}`);
   }
   pattern(prognocis.draftStatusPattern, 'prognocis.draftStatusPattern');
@@ -185,7 +185,9 @@ export function validateConfigObject(config) {
       'hpiComplaintNameCell', 'hpiComplaintSelectButton', 'hpiComplaintConfirmButton',
       'hpiActiveComplaintId',
       'rosMenu', 'rosField', 'rosSaveButton',
-      'physicalExaminationMenu', 'physicalExaminationField', 'physicalExaminationSaveButton'
+      'physicalExaminationMenu', 'physicalExaminationField', 'physicalExaminationSaveButton',
+      'assessmentMenu', 'assessmentField', 'assessmentSaveButton', 'assessmentNotesTab',
+      'planMenu', 'planField', 'planSaveButton', 'planNotesTab'
     ]);
     if (!selectors.sectionSaveSuccess && !prognocis.sectionSaveUrlPattern) {
       throw new Error('Write mode requires sectionSaveSuccess or sectionSaveUrlPattern');

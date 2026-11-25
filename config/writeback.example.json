@@ -37,7 +37,9 @@
     "sectionUrlPatterns": {
       "hpi": "TODO_CAPTURE_HPI_FRAME_URL_PATTERN",
       "ros": "TODO_CAPTURE_ROS_FRAME_URL_PATTERN",
-      "physicalExamination": "TODO_CAPTURE_PHYSICAL_EXAMINATION_FRAME_URL_PATTERN"
+      "physicalExamination": "TODO_CAPTURE_PHYSICAL_EXAMINATION_FRAME_URL_PATTERN",
+      "assessment": "/Assessment\\.action2(?:\\?|$)",
+      "plan": "/Assessment\\.action2(?:\\?|$)"
     },
     "sectionSaveUrlPattern": "",
     "draftSaveUrlPattern": "",
@@ -90,7 +92,19 @@
       "sectionSaveSuccess": "",
       "saveDraftButton": "TODO_CAPTURE_SAVE_DRAFT_BUTTON",
       "draftSaveSuccess": "",
-      "draftStatus": "TODO_CAPTURE_DRAFT_STATUS"
+      "draftStatus": "TODO_CAPTURE_DRAFT_STATUS",
+      "assessmentMenu": "#menu_AS",
+      "assessmentField": "#msTrn_Assessment",
+      "assessmentSaveButton": "#save:not(.actbutdis)",
+      "assessmentNotesTab": "#tab_3",
+      "planMenu": "#menu_AS",
+      "planField": "#ms_plan_others",
+      "planSaveButton": "#save:not(.actbutdis)",
+      "planNotesTab": "#tab_3"
+    },
+    "sectionSaveUrlPatterns": {
+      "assessment": "/Assessment\\.action2(?:\\?|$)",
+      "plan": "/Assessment\\.action2(?:\\?|$)"
     }
   },
   "runtime": {

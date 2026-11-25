@@ -3,7 +3,9 @@
     "note": {
       "hpi": "Synthetic HPI",
       "ros": "Synthetic ROS",
-      "physical_examination": "Synthetic examination"
+      "physical_examination": "Synthetic examination",
+      "assessment": "Improving cough.",
+      "plan": "Follow up as needed."
     },
     "org_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaa081",
     "status": "ATTESTED",

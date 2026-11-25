@@ -2,7 +2,7 @@ import { clinicalArtifactHash } from '../src/domain/clinical-artifact.mjs';
 
 export function artifact(overrides = {}) {
   const base = {
-    version: 3,
+    version: 4,
     source: 'care1960-scribe',
     status: 'ATTESTED',
     jobId: 'scribe-job-1',
@@ -27,7 +27,9 @@ export function artifact(overrides = {}) {
     sections: {
       hpi: 'Patient reports an improving cough.',
       ros: 'Respiratory: cough. Constitutional: denies fever or chills.',
-      physicalExamination: 'Mouth and throat normal. Lungs clear to auscultation.'
+      physicalExamination: 'Mouth and throat normal. Lungs clear to auscultation.',
+      assessment: 'Improving cough.',
+      plan: 'Follow up as needed.'
     },
     diagnoses: []
   };

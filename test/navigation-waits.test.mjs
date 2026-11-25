@@ -77,3 +77,30 @@ test('uncoded browser failures expose a safe workflow stage without changing cod
   writer.processRecord = async () => { throw Object.assign(new Error('login'), { code: 'AUTH_REQUIRED' }); };
   await assert.rejects(writer.process({}, {}), { code: 'AUTH_REQUIRED' });
 });
+
+test('overlay dismissal reacquires a frame replaced during a click', async () => {
+  const browser = await launch();
+  try {
+    const page = await browser.newPage();
+    await page.route('https://ehr.test/**', route => route.fulfill({
+      contentType: 'text/html',
+      body: route.request().url().endsWith('/moving')
+        ? '<style>@keyframes move{from{margin-left:0}to{margin-left:100px}}button{animation:move .1s infinite alternate}</style><button id="dismiss">Dismiss</button>'
+        : '<button id="dismiss" onclick="this.remove()">Dismiss</button>'
+    }));
+    await page.setContent('<iframe src="https://ehr.test/moving"></iframe>');
+    await page.frames()[1].locator('#dismiss').waitFor();
+    await page.evaluate(() => setTimeout(() => {
+      document.querySelector('iframe').remove();
+      const frame = document.createElement('iframe');
+      frame.src = 'https://ehr.test/stable';
+      document.body.append(frame);
+    }, 150));
+    const writer = new PrognocisBrowser(page, {
+      transientOverlayWaitMs: 3000, selectors: { transientOverlayDismiss: '#dismiss' }
+    }, {});
+    await writer.dismissTransientOverlay({ waitForPossible: true });
+    assert.equal(page.frames()[1].url(), 'https://ehr.test/stable');
+    assert.equal(await page.frames()[1].locator('#dismiss').count(), 0);
+  } finally { await browser.close(); }
+});

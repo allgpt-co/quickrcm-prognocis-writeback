@@ -237,19 +237,30 @@ export class PrognocisBrowser {
 
   async dismissTransientOverlay({ waitForPossible = false } = {}) {
     if (!this.selectors.transientOverlayDismiss) return;
-    const deadline = Date.now() + (waitForPossible
-      ? (this.config.transientOverlayWaitMs ?? 1_500)
-      : 0);
+    const deadline = Date.now() + Math.max(this.config.transientOverlayWaitMs ?? 1_500, 1_500);
+    let recovering = false;
     do {
-      const dismiss = await optionalVisibleInFrames(this.rootPage, this.selectors.transientOverlayDismiss);
-      if (dismiss) {
-        await dismiss.locator.click();
-        await this.rootPage.waitForTimeout(100);
-        return;
+      try {
+        const dismiss = await optionalVisibleInFrames(this.rootPage, this.selectors.transientOverlayDismiss);
+        if (dismiss) {
+          await dismiss.locator.click({ timeout: Math.max(1, deadline - Date.now()) });
+          await this.rootPage.waitForTimeout(100);
+          return;
+        }
+        if (!waitForPossible && !recovering) return;
+      } catch (error) {
+        if (this.rootPage.isClosed() || !/context|detach|destroyed|timeout/i.test(error.message)) throw error;
+        // This control only dismisses an overlay. Reacquire it from the new
+        // frameset instead of failing a completed clinical read-back.
+        recovering = true;
       }
-      if (!waitForPossible) return;
       await this.rootPage.waitForTimeout(100);
     } while (Date.now() < deadline);
+    if (await optionalVisibleInFrames(this.rootPage, this.selectors.transientOverlayDismiss)) {
+      throw Object.assign(new Error('Transient overlay did not stabilize for dismissal'), {
+        code: 'OVERLAY_DISMISS_UNSTABLE'
+      });
+    }
   }
 
   async findAuthenticatedApplicationPage() {

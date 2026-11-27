@@ -3,8 +3,9 @@ import path from 'node:path';
 import { ensurePrivateDirectory, ensurePrivateFile } from './private-files.mjs';
 
 export class VerificationLedger {
-  constructor(file) {
+  constructor(file, noteEntryMode = 'section-screens') {
     this.file = file;
+    this.noteEntryMode = noteEntryMode;
     this.hashes = new Set();
     this.acknowledged = new Set();
   }
@@ -19,6 +20,8 @@ export class VerificationLedger {
     }
     for (const line of text.split('\n').filter(Boolean)) {
       const record = JSON.parse(line);
+      // Complaint HPI proof cannot verify HPI General after changing the route.
+      if ((record.noteEntryMode ?? 'section-screens') !== this.noteEntryMode) continue;
       if (record.status === 'DRAFT_VERIFIED' && /^[a-f0-9]{64}$/.test(record.artifactHash)) {
         this.hashes.add(record.artifactHash);
       }
@@ -52,6 +55,7 @@ export class VerificationLedger {
     await fs.appendFile(this.file, `${JSON.stringify({
       timestamp: new Date().toISOString(),
       status: 'DRAFT_VERIFIED',
+      noteEntryMode: this.noteEntryMode,
       artifactHash,
       jobKey,
       ehrEncounterId
@@ -77,6 +81,7 @@ export class VerificationLedger {
     await fs.appendFile(this.file, `${JSON.stringify({
       timestamp: new Date().toISOString(),
       status: 'WRITEBACK_ACKNOWLEDGED',
+      noteEntryMode: this.noteEntryMode,
       artifactHash,
       jobKey,
       clinicalExportId,

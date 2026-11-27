@@ -75,6 +75,14 @@ function validatePrognocis(config) {
   const loginUrl = validUrl(prognocis.loginUrl, 'prognocis.loginUrl');
   if (appUrl.origin !== loginUrl.origin) throw new Error('PrognoCIS app and login URLs must use the same origin');
   if (typeof prognocis.loginPerRun !== 'boolean') throw new Error('prognocis.loginPerRun must be boolean');
+  if (prognocis.noteEntryMode !== undefined
+    && !['section-screens', 'dictate-transcribe'].includes(prognocis.noteEntryMode)) {
+    throw new Error('prognocis.noteEntryMode must be section-screens or dictate-transcribe');
+  }
+  for (const key of ['dictateTranscribeUrlPattern', 'dictateTranscribeSaveUrlPattern']) {
+    if (/TODO_/i.test(prognocis[key] ?? '')) throw new Error(`Replace the uncaptured prognocis.${key} placeholder`);
+    pattern(prognocis[key], `prognocis.${key}`);
+  }
   pattern(prognocis.patientSearchUrlPattern, 'prognocis.patientSearchUrlPattern');
   pattern(prognocis.patientIdPattern, 'prognocis.patientIdPattern');
   pattern(prognocis.encounterHistoryUrlPattern, 'prognocis.encounterHistoryUrlPattern');
@@ -175,22 +183,31 @@ export function validateConfigObject(config) {
   }
 
   if (automation.writeEnabled) {
-    nonEmpty(prognocis.hpiComplaintName, 'prognocis.hpiComplaintName');
-    nonEmpty(prognocis.hpiComplaintIdAttribute, 'prognocis.hpiComplaintIdAttribute');
-    nonEmpty(prognocis.hpiComplaintIdPattern, 'prognocis.hpiComplaintIdPattern');
-    requiredSelectors(selectors, 'prognocis', [
-      'encounterProviderCell',
-      'hpiMenu', 'hpiField', 'hpiSaveButton',
-      'hpiComplaintLookupButton', 'hpiComplaintSearchInput', 'hpiComplaintRows',
-      'hpiComplaintNameCell', 'hpiComplaintSelectButton', 'hpiComplaintConfirmButton',
-      'hpiActiveComplaintId',
-      'rosMenu', 'rosField', 'rosSaveButton',
-      'physicalExaminationMenu', 'physicalExaminationField', 'physicalExaminationSaveButton',
-      'assessmentMenu', 'assessmentField', 'assessmentSaveButton', 'assessmentNotesTab',
-      'planMenu', 'planField', 'planSaveButton', 'planNotesTab'
-    ]);
-    if (!selectors.sectionSaveSuccess && !prognocis.sectionSaveUrlPattern) {
-      throw new Error('Write mode requires sectionSaveSuccess or sectionSaveUrlPattern');
+    requiredSelectors(selectors, 'prognocis', ['encounterProviderCell']);
+    if (prognocis.noteEntryMode === 'dictate-transcribe') {
+      nonEmpty(prognocis.dictateTranscribeUrlPattern, 'prognocis.dictateTranscribeUrlPattern');
+      nonEmpty(prognocis.dictateTranscribeSaveUrlPattern, 'prognocis.dictateTranscribeSaveUrlPattern');
+      requiredSelectors(selectors, 'prognocis', [
+        'dictateTranscribeMenu', 'dictateTranscribeTitles', 'dictateTranscribeHeading',
+        'dictateTranscribeField', 'dictateTranscribeSaveButton'
+      ]);
+    } else {
+      nonEmpty(prognocis.hpiComplaintName, 'prognocis.hpiComplaintName');
+      nonEmpty(prognocis.hpiComplaintIdAttribute, 'prognocis.hpiComplaintIdAttribute');
+      nonEmpty(prognocis.hpiComplaintIdPattern, 'prognocis.hpiComplaintIdPattern');
+      requiredSelectors(selectors, 'prognocis', [
+        'hpiMenu', 'hpiField', 'hpiSaveButton',
+        'hpiComplaintLookupButton', 'hpiComplaintSearchInput', 'hpiComplaintRows',
+        'hpiComplaintNameCell', 'hpiComplaintSelectButton', 'hpiComplaintConfirmButton',
+        'hpiActiveComplaintId',
+        'rosMenu', 'rosField', 'rosSaveButton',
+        'physicalExaminationMenu', 'physicalExaminationField', 'physicalExaminationSaveButton',
+        'assessmentMenu', 'assessmentField', 'assessmentSaveButton', 'assessmentNotesTab',
+        'planMenu', 'planField', 'planSaveButton', 'planNotesTab'
+      ]);
+      if (!selectors.sectionSaveSuccess && !prognocis.sectionSaveUrlPattern) {
+        throw new Error('Write mode requires sectionSaveSuccess or sectionSaveUrlPattern');
+      }
     }
     if (prognocis.draftSaveStrategy !== 'sections-only') {
       requiredSelectors(selectors, 'prognocis', ['saveDraftButton']);

@@ -20,6 +20,13 @@ import {
 } from '../browser/locators.mjs';
 
 const SECTION_NAMES = ['hpi', 'ros', 'physicalExamination', 'assessment', 'plan'];
+const DICTATE_TRANSCRIBE_TITLES = {
+  hpi: 'HPI General',
+  ros: 'Review of Systems',
+  physicalExamination: 'Physical Exam',
+  assessment: 'Assessment General',
+  plan: 'Assessment Plan'
+};
 
 function normalize(value) {
   return String(value ?? '').normalize('NFKC').toLowerCase().replace(/\s+/g, ' ').trim();
@@ -214,6 +221,7 @@ export class PrognocisBrowser {
     this.automation = automation;
     this.credentials = credentials;
     this.selectors = config.selectors;
+    this.usesDictateTranscribe = config.noteEntryMode === 'dictate-transcribe';
     this.unexpectedDialog = null;
     this.watchedPages = new WeakSet();
     this.watchDialogs(page);
@@ -823,8 +831,52 @@ export class PrognocisBrowser {
     return complaintId;
   }
 
+  async dictateTranscribeField(section, { select = false, timeoutMs = this.config.sectionLoadTimeoutMs ?? 10_000 } = {}) {
+    const title = DICTATE_TRANSCRIBE_TITLES[section];
+    if (!title) throw new Error(`Unknown Dictate/Transcribe section: ${section}`);
+    const urlPattern = new RegExp(this.config.dictateTranscribeUrlPattern, 'i');
+    if (select) {
+      const open = await optionalVisibleInFrames(this.editorPage, this.selectors.dictateTranscribeTitles);
+      if (!open || !urlPattern.test(open.scope.url())) {
+        await clickInFrames(this.editorPage, this.selectors.dictateTranscribeMenu,
+          'PrognoCIS Dictate/Transcribe', { timeout: timeoutMs });
+      }
+      const titles = await firstVisibleInSectionFrame(this.editorPage,
+        this.selectors.dictateTranscribeTitles, this.config.dictateTranscribeUrlPattern,
+        'PrognoCIS Dictate/Transcribe titles', timeoutMs);
+      // Exact text prevents Assessment General from matching Assessment Plan.
+      const target = titles.scope.locator(this.selectors.dictateTranscribeTitles)
+        .filter({ hasText: complaintNamePattern(title), visible: true });
+      await target.waitFor({ state: 'visible', timeout: timeoutMs });
+      await target.click();
+    }
+    const deadline = Date.now() + timeoutMs;
+    do {
+      for (const scope of pageScopes(this.editorPage)) {
+        if (!urlPattern.test(scope.url())) continue;
+        const heading = scope.locator(this.selectors.dictateTranscribeHeading).filter({ visible: true });
+        if (await heading.count().catch(() => 0) !== 1) continue;
+        const active = normalize(await heading.innerText().catch(() => '')).replace(/ notes$/, '');
+        if (active !== normalize(title)) continue;
+        // ponytail: only same-frame headings/editors are supported. A rich-text
+        // iframe needs a captured, explicitly scoped editor path before support.
+        const locator = scope.locator(this.selectors.dictateTranscribeField).filter({ visible: true });
+        const count = await locator.count().catch(() => 0);
+        if (count > 1) throw new Error(`Ambiguous Dictate/Transcribe editor for ${title}`);
+        if (count === 1) return { scope, locator };
+      }
+      await this.editorPage.waitForTimeout(100);
+    } while (Date.now() < deadline);
+    throw Object.assign(new Error(`Dictate/Transcribe ${title} editor did not become active`), {
+      code: 'DICTATE_TRANSCRIBE_SECTION_NOT_ACTIVE'
+    });
+  }
+
   async sectionField(section, appointmentType, { allowTemplate = false } = {}) {
     await this.dismissTransientOverlay();
+    if (this.usesDictateTranscribe) {
+      return (await this.dictateTranscribeField(section, { select: true })).locator;
+    }
     const assessmentPage = section === 'assessment' || section === 'plan';
     const pattern = this.config.sectionUrlPatterns?.[section];
     // Both narratives share a page. Await the new document so a still-visible
@@ -907,7 +959,9 @@ export class PrognocisBrowser {
     while (Date.now() < deadline) {
       try {
         if (!field) {
-          const fresh = await firstVisibleInSectionFrame(
+          const fresh = this.usesDictateTranscribe
+            ? await this.dictateTranscribeField(section, { timeoutMs: Math.max(1, deadline - Date.now()) })
+            : await firstVisibleInSectionFrame(
             this.editorPage,
             this.selectors[`${section}Field`],
             this.config.sectionUrlPatterns?.[section],
@@ -975,23 +1029,27 @@ export class PrognocisBrowser {
       if (!(await field.isEditable().catch(() => false))) {
         throw new Error(`PrognoCIS ${section} narrative field is not editable`);
       }
-      if (section === 'hpi') {
+      if (section === 'hpi' && !this.usesDictateTranscribe) {
         await this.assertSelectedHpiComplaint();
       }
       await fillField(field, artifact.sections[section]);
-      // Assessment/Plan tracks edits on keyup, not input/change.
-      if (section === 'assessment' || section === 'plan') await field.press('End');
+      // Legacy editors track edits on keyup as well as input/change.
+      if (this.usesDictateTranscribe || section === 'assessment' || section === 'plan') await field.press('End');
       if (normalizeClinicalText(await readField(field)) !== normalizeClinicalText(artifact.sections[section])) {
         throw new Error(`PrognoCIS ${section} field did not retain the approved text before save`);
       }
-      if (section === 'hpi') await this.assertSelectedHpiComplaint();
-      const save = await firstVisibleInSectionFrame(
+      if (section === 'hpi' && !this.usesDictateTranscribe) await this.assertSelectedHpiComplaint();
+      const active = this.usesDictateTranscribe ? await this.dictateTranscribeField(section) : null;
+      const save = active ? {
+        locator: active.scope.locator(this.selectors.dictateTranscribeSaveButton).filter({ visible: true })
+      } : await firstVisibleInSectionFrame(
         this.editorPage, this.selectors[`${section}SaveButton`],
         this.config.sectionUrlPatterns?.[section], `PrognoCIS ${section} Save`,
         this.config.sectionLoadTimeoutMs ?? 10_000
       );
       await waitForConfiguredSave(this.editorPage, {
-        urlPattern: this.config.sectionSaveUrlPatterns?.[section] ?? this.config.sectionSaveUrlPattern,
+        urlPattern: this.usesDictateTranscribe ? this.config.dictateTranscribeSaveUrlPattern
+          : this.config.sectionSaveUrlPatterns?.[section] ?? this.config.sectionSaveUrlPattern,
         successSelector: this.selectors.sectionSaveSuccess,
         timeoutMs: this.config.saveTimeoutMs ?? 90_000,
         label: `PrognoCIS ${section} save`
@@ -1047,7 +1105,7 @@ export class PrognocisBrowser {
 
   async saveDraftAndVerifyStatus(artifact, expectedEncounterId) {
     // The production narrative-only flow saves each section individually.
-    // Assessment and Plan use the shared Notes page; no encounter signing occurs.
+    // No encounter signing occurs with either note-entry route.
     if (this.config.draftSaveStrategy !== 'sections-only') {
       const save = await firstVisibleInSectionFrame(
         this.editorPage, this.selectors.saveDraftButton,
@@ -1150,7 +1208,7 @@ export class PrognocisBrowser {
     }
 
     await this.assertEncounterIsEditable();
-    await this.selectHpiComplaint(artifact.encounter.appointmentType);
+    if (!this.usesDictateTranscribe) await this.selectHpiComplaint(artifact.encounter.appointmentType);
     this.failureStage = 'SECTION_INSPECTION';
     const before = await this.inspectDraft(artifact);
     if (before.exact && await this.verifyDraftStatus(artifact, ehrEncounterId)) {
@@ -1169,7 +1227,7 @@ export class PrognocisBrowser {
 
     this.failureStage = 'READBACK_NAVIGATION';
     await this.reopenExactEncounter(artifact, ehrEncounterId);
-    await this.selectHpiComplaint(artifact.encounter.appointmentType);
+    if (!this.usesDictateTranscribe) await this.selectHpiComplaint(artifact.encounter.appointmentType);
     this.failureStage = 'READBACK_INSPECTION';
     const after = await this.inspectDraft(artifact);
     if (!after.exact || !(await this.verifyDraftStatus(artifact, ehrEncounterId))) {

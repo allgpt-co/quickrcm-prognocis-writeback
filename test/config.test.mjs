@@ -87,6 +87,36 @@ function addWriteSelectors(value) {
   });
 }
 
+test('Dictate/Transcribe requires captured editors and save proof without complaint controls', () => {
+  const value = config();
+  value.automation.writeEnabled = true;
+  Object.assign(value.prognocis, {
+    noteEntryMode: 'dictate-transcribe', draftSaveStrategy: 'sections-only',
+    dictateTranscribeUrlPattern: '/dictate', dictateTranscribeSaveUrlPattern: '/dictate'
+  });
+  const required = {
+    encounterProviderCell: '.provider', dictateTranscribeMenu: '#dictate-menu',
+    dictateTranscribeTitles: '.title', dictateTranscribeHeading: '#heading',
+    dictateTranscribeField: '#note', dictateTranscribeSaveButton: '#save', draftStatus: '#status'
+  };
+  Object.assign(value.prognocis.selectors, required);
+  assert.doesNotThrow(() => validateConfigObject(value));
+  for (const key of Object.keys(required)) {
+    const invalid = structuredClone(value);
+    delete invalid.prognocis.selectors[key];
+    assert.throws(() => validateConfigObject(invalid), new RegExp(key));
+  }
+  for (const key of ['dictateTranscribeUrlPattern', 'dictateTranscribeSaveUrlPattern']) {
+    for (const invalidValue of [undefined, '[', 'TODO_CAPTURE_PATTERN']) {
+      const invalid = structuredClone(value);
+      invalid.prognocis[key] = invalidValue;
+      assert.throws(() => validateConfigObject(invalid), new RegExp(key));
+    }
+  }
+  value.prognocis.noteEntryMode = 'unknown';
+  assert.throws(() => validateConfigObject(value), /noteEntryMode/);
+});
+
 test('section-only write strategy needs all narrative saves and draft proof, but no extra save control', () => {
   const value = config();
   value.automation.writeEnabled = true;

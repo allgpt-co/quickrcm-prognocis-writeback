@@ -492,6 +492,8 @@ test('CLI validates a captured response without browser configuration or credent
 test('CLI rejects incomplete API output before connecting to the EHR and releases its lock', async (t) => {
   const { directory, responseFile } = await files(t, { sync_result: 'UNCHANGED' });
   const config = JSON.parse(await fs.readFile(new URL('../config/writeback.example.json', import.meta.url)));
+  config.prognocis.dictateTranscribeUrlPattern = '/unused-dictate';
+  config.prognocis.dictateTranscribeSaveUrlPattern = '/unused-dictate';
   config.care1960 = { ...fileConfig, responseFile };
   config.browser.cdpEndpoint = 'http://127.0.0.1:9';
   for (const key of Object.keys(config.prognocis.selectors)) {
@@ -610,6 +612,8 @@ test('CLI retires an exhausted HTTP record and advances its cursor without conne
     });
   });
   const config = JSON.parse(await fs.readFile(new URL('../config/writeback.example.json', import.meta.url)));
+  config.prognocis.dictateTranscribeUrlPattern = '/unused-dictate';
+  config.prognocis.dictateTranscribeSaveUrlPattern = '/unused-dictate';
   config.automation.writeEnabled = true;
   config.care1960 = {
     ...fileConfig, input: 'http', requestFile, apiUrl, timeoutMs: 2000,

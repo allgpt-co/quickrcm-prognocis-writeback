@@ -97,7 +97,7 @@ async function main() {
         return browserDestination.process(artifact, options);
       }
     };
-    const ledger = new VerificationLedger(config.runtime.ledgerFile);
+    const ledger = new VerificationLedger(config.runtime.ledgerFile, config.prognocis.noteEntryMode);
     await ledger.init();
     let retryLedger;
     if (config.automation.writeEnabled && !args.noAcknowledge

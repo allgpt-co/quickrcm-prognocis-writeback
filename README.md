@@ -222,7 +222,7 @@ and the live PrognoCIS canary still require verification.
 
 ## Destination behavior
 
-All three section keys and attestation/identity metadata are required. Following
+All five section keys and attestation/identity metadata are required. Following
 Care1960 migration `0023`, section values may be strings or null, including blank,
 heading-only, or placeholder text such as `Not documented`. The writer preserves
 supplied text with its existing outer-whitespace trimming and treats null as an
@@ -230,13 +230,48 @@ empty narrative. It never fills missing findings with generated text. Missing ke
 non-string/non-null values, and values exceeding 200,000 UTF-16 units are rejected.
 An empty source section leaves an empty EHR field untouched; any different existing
 EHR text still stops the record, including when the source is blank or a placeholder.
-All three resulting fields and draft status must match on read-back before normal
+All five resulting fields and draft status must match on read-back before normal
 acknowledgement. Physical assessment maps to Physical Examination, never the
 separate Assessment section. No diagnosis
 codes, symptom checkboxes, signing, finalization, or claims actions are performed.
 Existing different text stops the record. Existing identical text is a no-op.
 
-Before entering HPI, the writer opens the HPI menu and finds the configured
+The example configuration uses `prognocis.noteEntryMode: "dictate-transcribe"`.
+It opens **Dictate Transcribe** and selects these exact titles:
+
+| Source narrative | Dictate/Transcribe title |
+| --- | --- |
+| HPI | HPI General |
+| ROS | Review of Systems |
+| Physical Examination | Physical Exam |
+| Assessment | Assessment General |
+| Plan | Assessment Plan |
+
+Each selection must show the matching editor heading (with an optional `Notes`
+suffix) and one visible editor in that frame before writing. The writer saves
+each section using the existing click-and-confirm flow, checks draft status,
+then reopens the same encounter and verifies all five subsections. It skips
+identical text and refuses conflicting text. It does not select an HPI complaint
+in this mode or change other Dictate/Transcribe titles.
+
+**Live setup is still required.** Screenshots establish the titles, not the DOM
+selectors or save endpoint. Capture `dictateTranscribeMenu`,
+`dictateTranscribeTitles` (individual title items), `dictateTranscribeHeading`,
+`dictateTranscribeField`, and `dictateTranscribeSaveButton` in a logged-in test
+encounter. The heading, editor, and section Save button must be in the same
+configured content frame. Set `dictateTranscribeUrlPattern` to that frame's URL
+and `dictateTranscribeSaveUrlPattern` to its save POST endpoint. Replace the
+example's `TODO_CAPTURE_*` values before validation; no production selectors
+were inferred from the screenshots. Preserve the current `draftSaveStrategy`,
+draft save controls, and status proof when updating the deployed configuration.
+
+Verification ledger entries are scoped by note-entry mode. Prior complaint-route
+proof cannot acknowledge a new Dictate/Transcribe write without verifying its
+subsections. Already acknowledged source exports are not automatically requeued
+or moved, and existing complaint notes are not deleted.
+
+Existing configurations without `noteEntryMode` retain `section-screens` behavior.
+For that route, before entering HPI the writer opens the HPI menu and finds the configured
 `hpiComplaintName` (`Wellness exam`). With the captured encounter-list selectors,
 it matches the exact complaint name, binds its checkbox to the same row's stable
 ID, activates the narrative by clicking the name, and ensures that row's
@@ -260,4 +295,8 @@ canary before scheduling. See [readiness](LIVE_READINESS_CHECKLIST.md),
 [architecture](docs/ARCHITECTURE.md), and the
 [full Hermes production cron runbook](docs/HERMES_PRODUCTION_CRON_RUNBOOK.md).
 
-Assessment and Plan use Assessment → Notes. Both are required API keys (text or null) in the version 4 artifact and are included in its verification hash. Deploy Care1960 migration 0028 before this writer; configure both Notes-tab selectors and Assessment page/save URL patterns as in the example. Legacy version 3 artifacts are rejected. Existing acknowledged exports are not automatically requeued. The writer preserves conflicting clinician text and never edits diagnosis codes or Procedures.
+In `section-screens` mode, Assessment and Plan use Assessment → Notes and require
+both Notes-tab selectors and Assessment page/save URL patterns. Both narratives
+are required API keys (text or null) in the version 4 artifact and are included in
+its verification hash. Deploy Care1960 migration 0028 before this writer. Legacy
+version 3 artifacts are rejected. The writer never edits diagnosis codes or Procedures.
